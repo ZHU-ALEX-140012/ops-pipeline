@@ -1,0 +1,122 @@
+{
+  "name": "aw_02_single_target_down",
+  "task": "api_watch",
+  "note": "单目标连续失败、同轮其他两个正常 —— 应告警，且不能误判为全局/本机故障",
+  "expect": {
+    "should_alert": true,
+    "severity_any_of": [
+      "alert",
+      "critical"
+    ],
+    "mention_any": [
+      "worldtime"
+    ],
+    "mention_none": [
+      "全部目标失败",
+      "本机断网",
+      "整体不可用"
+    ]
+  },
+  "run_doc": {
+    "schema": "ops/run@1",
+    "run_id": "eval-api_watch",
+    "task": "api_watch",
+    "started_at": "2026-10-06T09:00:00Z",
+    "finished_at": "2026-10-06T09:00:00Z",
+    "status": "degraded",
+    "metrics": {
+      "targets": 3,
+      "ok": 2,
+      "failed": 1,
+      "p50_ms": 281.0,
+      "p95_ms": 281.0,
+      "max_ms": 281.0,
+      "anomalies": 1
+    },
+    "samples": [
+      {
+        "target": "worldtime",
+        "metric": "probe",
+        "value_num": 0.0,
+        "value_text": null,
+        "ok": 0,
+        "ts": "2026-10-06T09:00:00Z",
+        "status_code": null,
+        "error": "URLError: [WinError 10054] 远程主机强迫关闭了一个现有的连接。",
+        "body_len": null,
+        "content_type": null
+      },
+      {
+        "target": "frankfurter",
+        "metric": "probe",
+        "value_num": 128.0,
+        "value_text": "h2",
+        "ok": 1,
+        "ts": "2026-10-06T09:00:00Z",
+        "status_code": 200,
+        "error": null,
+        "body_len": 64,
+        "content_type": "application/json; charset=utf-8"
+      },
+      {
+        "target": "github_rate",
+        "metric": "probe",
+        "value_num": 281.0,
+        "value_text": "h3",
+        "ok": 1,
+        "ts": "2026-10-06T09:00:00Z",
+        "status_code": 200,
+        "error": null,
+        "body_len": 64,
+        "content_type": "application/json; charset=utf-8"
+      }
+    ],
+    "anomalies": [
+      {
+        "kind": "consecutive_failure",
+        "target": "worldtime",
+        "detail": "连续 5 次失败（阈值 3，跨度 888 分钟）；24 小时内累计失败 5 次；最近错误：URLError: [WinError 10054] 远程主机强迫关闭了一个现有的连接。",
+        "severity_hint": "alert"
+      }
+    ],
+    "notes": [],
+    "artifacts": [],
+    "baseline": {
+      "worldtime": {
+        "samples": 0,
+        "p50_ms": 0.0,
+        "p95_ms": 0.0,
+        "consecutive_failures": 5,
+        "streak_span_minutes": 888.0,
+        "failures_24h": 5,
+        "modal_body_hash": null,
+        "current_body_hash": null
+      },
+      "frankfurter": {
+        "samples": 40,
+        "p50_ms": 130.0,
+        "p95_ms": 160.0,
+        "consecutive_failures": 0,
+        "streak_span_minutes": null,
+        "failures_24h": 0,
+        "modal_body_hash": "h2",
+        "current_body_hash": "h2"
+      },
+      "github_rate": {
+        "samples": 40,
+        "p50_ms": 210.0,
+        "p95_ms": 260.0,
+        "consecutive_failures": 0,
+        "streak_span_minutes": null,
+        "failures_24h": 0,
+        "modal_body_hash": "h3",
+        "current_body_hash": "h3"
+      }
+    },
+    "thresholds": {
+      "consecutive_failures": 3,
+      "latency_p95_multiple": 3.0,
+      "cold_start_min_samples": 20
+    }
+  }
+}

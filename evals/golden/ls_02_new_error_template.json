@@ -1,0 +1,127 @@
+{
+  "name": "ls_02_new_error_template",
+  "task": "log_scan",
+  "note": "出现一个从没见过的新错误模板 —— 应告警并指出是「新出现」",
+  "expect": {
+    "should_alert": true,
+    "severity_any_of": [
+      "alert",
+      "critical"
+    ],
+    "mention_any": [
+      "新",
+      "首次",
+      "以前没有",
+      "从未"
+    ]
+  },
+  "run_doc": {
+    "schema": "ops/run@1",
+    "run_id": "eval-log_scan",
+    "task": "log_scan",
+    "started_at": "2026-10-06T09:00:00Z",
+    "finished_at": "2026-10-06T09:00:00Z",
+    "status": "degraded",
+    "metrics": {
+      "targets": 1,
+      "ok": 0,
+      "failed": 1,
+      "sources": 1,
+      "lines_current": 2327,
+      "error_lines_current": 47,
+      "templates": 3,
+      "anomalies": 1
+    },
+    "samples": [
+      {
+        "target": "app",
+        "metric": "log_template",
+        "value_num": 1170,
+        "ok": 1,
+        "ts": "2026-10-06T09:00:00Z",
+        "status_code": null,
+        "error": "INFO [http] GET /api/products status=200"
+      },
+      {
+        "target": "app",
+        "metric": "log_template",
+        "value_num": 1110,
+        "ok": 1,
+        "ts": "2026-10-06T09:00:00Z",
+        "status_code": null,
+        "error": "INFO [cache] hit key=product:<*>"
+      },
+      {
+        "target": "app",
+        "metric": "log_template",
+        "value_num": 47,
+        "ok": 1,
+        "ts": "2026-10-06T09:00:00Z",
+        "status_code": null,
+        "error": "ERROR [payment] gateway returned 502 body=<*>"
+      }
+    ],
+    "anomalies": [
+      {
+        "kind": "new_error_template",
+        "target": "app",
+        "detail": "模板「ERROR [payment] gateway returned 502 body=<*>」本窗口出现 47 次，此前 7 个窗口从未出现（首见 2026-10-05T09:00:00Z）",
+        "severity_hint": "alert"
+      }
+    ],
+    "notes": [],
+    "artifacts": [],
+    "sources": [
+      {
+        "name": "app",
+        "path": "data/logs/app.log",
+        "exists": true,
+        "total_lines": 4677,
+        "parsed_lines": 4677,
+        "unparsed_lines": 0,
+        "current_lines": 2327,
+        "baseline_lines": 2350,
+        "oldest_ts": "2026-10-05T09:00:00Z",
+        "newest_ts": "2026-10-06T09:00:00Z",
+        "error_lines_current": 47,
+        "top_templates": [
+          {
+            "template": "INFO [http] GET /api/products status=200",
+            "level": "INFO",
+            "current": 1170,
+            "baseline": 1200,
+            "history_avg": 1200.0,
+            "history_median": 1200.0,
+            "history_windows": 7,
+            "excluded_windows": 0,
+            "first_seen": "2026-09-01T00:00:00Z"
+          },
+          {
+            "template": "INFO [cache] hit key=product:<*>",
+            "level": "INFO",
+            "current": 1110,
+            "baseline": 1150,
+            "history_avg": 1150.0,
+            "history_median": 1150.0,
+            "history_windows": 7,
+            "excluded_windows": 0,
+            "first_seen": "2026-09-01T00:00:00Z"
+          },
+          {
+            "template": "ERROR [payment] gateway returned 502 body=<*>",
+            "level": "ERROR",
+            "current": 47,
+            "baseline": 0,
+            "history_avg": 0.0,
+            "history_median": 0.0,
+            "history_windows": 0,
+            "excluded_windows": 0,
+            "first_seen": "2026-10-06T09:00:00Z"
+          }
+        ]
+      }
+    ],
+    "window_start": "2026-10-05T09:00:00Z",
+    "window_end": "2026-10-06T09:00:00Z"
+  }
+}

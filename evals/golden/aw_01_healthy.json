@@ -1,0 +1,110 @@
+{
+  "name": "aw_01_healthy",
+  "task": "api_watch",
+  "note": "三个目标全正常、延迟平稳 —— 反向用例：不该告警",
+  "expect": {
+    "should_alert": false,
+    "severity_any_of": [
+      "info"
+    ],
+    "mention_none": [
+      "严重",
+      "全部不可用"
+    ]
+  },
+  "run_doc": {
+    "schema": "ops/run@1",
+    "run_id": "eval-api_watch",
+    "task": "api_watch",
+    "started_at": "2026-10-06T09:00:00Z",
+    "finished_at": "2026-10-06T09:00:00Z",
+    "status": "ok",
+    "metrics": {
+      "targets": 3,
+      "ok": 3,
+      "failed": 0,
+      "p50_ms": 132.0,
+      "p95_ms": 205.0,
+      "max_ms": 205.0,
+      "anomalies": 0
+    },
+    "samples": [
+      {
+        "target": "worldtime",
+        "metric": "probe",
+        "value_num": 118.0,
+        "value_text": "h1",
+        "ok": 1,
+        "ts": "2026-10-06T09:00:00Z",
+        "status_code": 200,
+        "error": null,
+        "body_len": 64,
+        "content_type": "application/json; charset=utf-8"
+      },
+      {
+        "target": "frankfurter",
+        "metric": "probe",
+        "value_num": 132.0,
+        "value_text": "h2",
+        "ok": 1,
+        "ts": "2026-10-06T09:00:00Z",
+        "status_code": 200,
+        "error": null,
+        "body_len": 64,
+        "content_type": "application/json; charset=utf-8"
+      },
+      {
+        "target": "github_rate",
+        "metric": "probe",
+        "value_num": 205.0,
+        "value_text": "h3",
+        "ok": 1,
+        "ts": "2026-10-06T09:00:00Z",
+        "status_code": 200,
+        "error": null,
+        "body_len": 64,
+        "content_type": "application/json; charset=utf-8"
+      }
+    ],
+    "anomalies": [],
+    "notes": [],
+    "artifacts": [],
+    "baseline": {
+      "worldtime": {
+        "samples": 40,
+        "p50_ms": 120.0,
+        "p95_ms": 150.0,
+        "consecutive_failures": 0,
+        "streak_span_minutes": null,
+        "failures_24h": 0,
+        "modal_body_hash": "h1",
+        "current_body_hash": "h1"
+      },
+      "frankfurter": {
+        "samples": 40,
+        "p50_ms": 130.0,
+        "p95_ms": 160.0,
+        "consecutive_failures": 0,
+        "streak_span_minutes": null,
+        "failures_24h": 0,
+        "modal_body_hash": "h2",
+        "current_body_hash": "h2"
+      },
+      "github_rate": {
+        "samples": 40,
+        "p50_ms": 210.0,
+        "p95_ms": 260.0,
+        "consecutive_failures": 0,
+        "streak_span_minutes": null,
+        "failures_24h": 0,
+        "modal_body_hash": "h3",
+        "current_body_hash": "h3"
+      }
+    },
+    "thresholds": {
+      "consecutive_failures": 3,
+      "latency_p95_multiple": 3.0,
+      "cold_start_min_samples": 20
+    }
+  }
+}

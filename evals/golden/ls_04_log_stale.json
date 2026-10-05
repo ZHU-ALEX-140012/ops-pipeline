@@ -1,0 +1,126 @@
+{
+  "name": "ls_04_log_stale",
+  "task": "log_scan",
+  "note": "日志 24 小时没有新内容 —— 服务可能已停，应告警，且不能被当成「没有错误=正常」",
+  "expect": {
+    "should_alert": true,
+    "severity_any_of": [
+      "alert",
+      "critical"
+    ],
+    "mention_any": [
+      "停",
+      "没有新",
+      "24"
+    ]
+  },
+  "run_doc": {
+    "schema": "ops/run@1",
+    "run_id": "eval-log_scan",
+    "task": "log_scan",
+    "started_at": "2026-10-06T09:00:00Z",
+    "finished_at": "2026-10-06T09:00:00Z",
+    "status": "degraded",
+    "metrics": {
+      "targets": 1,
+      "ok": 0,
+      "failed": 1,
+      "sources": 1,
+      "lines_current": 0,
+      "error_lines_current": 0,
+      "templates": 3,
+      "anomalies": 1
+    },
+    "samples": [
+      {
+        "target": "app",
+        "metric": "log_template",
+        "value_num": 0,
+        "ok": 1,
+        "ts": "2026-10-06T09:00:00Z",
+        "status_code": null,
+        "error": "INFO [cache] hit key=product:<*>"
+      },
+      {
+        "target": "app",
+        "metric": "log_template",
+        "value_num": 0,
+        "ok": 1,
+        "ts": "2026-10-06T09:00:00Z",
+        "status_code": null,
+        "error": "INFO [http] GET /api/products status=200"
+      },
+      {
+        "target": "app",
+        "metric": "log_template",
+        "value_num": 0,
+        "ok": 1,
+        "ts": "2026-10-06T09:00:00Z",
+        "status_code": null,
+        "error": "ERROR [db] connection timeout after <*>ms"
+      }
+    ],
+    "anomalies": [
+      {
+        "kind": "log_stale",
+        "target": "app",
+        "detail": "最近一条日志是 2026-10-05T01:31:59+08:00，已 24.2 小时没有新日志（阈值 3.0h）",
+        "severity_hint": "alert"
+      }
+    ],
+    "notes": [],
+    "artifacts": [],
+    "sources": [
+      {
+        "name": "app",
+        "path": "data/logs/app.log",
+        "exists": true,
+        "total_lines": 2282,
+        "parsed_lines": 2282,
+        "unparsed_lines": 0,
+        "current_lines": 0,
+        "baseline_lines": 2282,
+        "oldest_ts": "2026-10-05T09:00:00Z",
+        "newest_ts": "2026-10-05T01:31:59+08:00",
+        "error_lines_current": 0,
+        "top_templates": [
+          {
+            "template": "INFO [cache] hit key=product:<*>",
+            "level": "INFO",
+            "current": 0,
+            "baseline": 1170,
+            "history_avg": 1170.0,
+            "history_median": 1170.0,
+            "history_windows": 7,
+            "excluded_windows": 0,
+            "first_seen": "2026-09-01T00:00:00Z"
+          },
+          {
+            "template": "INFO [http] GET /api/products status=200",
+            "level": "INFO",
+            "current": 0,
+            "baseline": 1100,
+            "history_avg": 1100.0,
+            "history_median": 1100.0,
+            "history_windows": 7,
+            "excluded_windows": 0,
+            "first_seen": "2026-09-01T00:00:00Z"
+          },
+          {
+            "template": "ERROR [db] connection timeout after <*>ms",
+            "level": "ERROR",
+            "current": 0,
+            "baseline": 12,
+            "history_avg": 12.0,
+            "history_median": 12.0,
+            "history_windows": 7,
+            "excluded_windows": 0,
+            "first_seen": "2026-09-01T00:00:00Z"
+          }
+        ]
+      }
+    ],
+    "window_start": "2026-10-05T09:00:00Z",
+    "window_end": "2026-10-06T09:00:00Z"
+  }
+}

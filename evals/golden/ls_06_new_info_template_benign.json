@@ -1,0 +1,113 @@
+{
+  "name": "ls_06_new_info_template_benign",
+  "task": "log_scan",
+  "note": "新出现一个 INFO 模板，规则层按「0 → N 倍」误报 count_spike；正确答案是不告警 —— 这是唯一能区分「AI 有没有独立思考」的题型",
+  "expect": {
+    "should_alert": false,
+    "severity_any_of": [
+      "info",
+      "notice"
+    ],
+    "mention_any": [
+      "INFO",
+      "信息",
+      "正常",
+      "无害",
+      "部署",
+      "配置"
+    ],
+    "mention_none": [
+      "严重故障",
+      "服务不可用"
+    ]
+  },
+  "run_doc": {
+    "schema": "ops/run@1",
+    "run_id": "eval-log_scan",
+    "task": "log_scan",
+    "started_at": "2026-10-06T09:00:00Z",
+    "finished_at": "2026-10-06T09:00:00Z",
+    "status": "degraded",
+    "metrics": {
+      "targets": 1,
+      "ok": 0,
+      "failed": 1,
+      "sources": 1,
+      "lines_current": 1182,
+      "error_lines_current": 0,
+      "templates": 2,
+      "anomalies": 1
+    },
+    "samples": [
+      {
+        "target": "app",
+        "metric": "log_template",
+        "value_num": 1170,
+        "ok": 1,
+        "ts": "2026-10-06T09:00:00Z",
+        "status_code": null,
+        "error": "INFO [http] GET /api/products status=200"
+      },
+      {
+        "target": "app",
+        "metric": "log_template",
+        "value_num": 12,
+        "ok": 1,
+        "ts": "2026-10-06T09:00:00Z",
+        "status_code": null,
+        "error": "INFO [deploy] reloaded config from /etc/app/conf.d"
+      }
+    ],
+    "anomalies": [
+      {
+        "kind": "count_spike",
+        "target": "app",
+        "detail": "模板「INFO [deploy] reloaded config from /etc/app/conf.d」本窗口 12 次，基线 0 次（0 → 12，无法计算倍数，阈值 3.0 倍）",
+        "severity_hint": "notice"
+      }
+    ],
+    "notes": [],
+    "artifacts": [],
+    "sources": [
+      {
+        "name": "app",
+        "path": "data/logs/app.log",
+        "exists": true,
+        "total_lines": 2382,
+        "parsed_lines": 2382,
+        "unparsed_lines": 0,
+        "current_lines": 1182,
+        "baseline_lines": 1200,
+        "oldest_ts": "2026-10-05T09:00:00Z",
+        "newest_ts": "2026-10-06T09:00:00Z",
+        "error_lines_current": 0,
+        "top_templates": [
+          {
+            "template": "INFO [http] GET /api/products status=200",
+            "level": "INFO",
+            "current": 1170,
+            "baseline": 1200,
+            "history_avg": 1200.0,
+            "history_median": 1200.0,
+            "history_windows": 7,
+            "excluded_windows": 0,
+            "first_seen": "2026-09-01T00:00:00Z"
+          },
+          {
+            "template": "INFO [deploy] reloaded config from /etc/app/conf.d",
+            "level": "INFO",
+            "current": 12,
+            "baseline": 0,
+            "history_avg": 0.0,
+            "history_median": 0.0,
+            "history_windows": 0,
+            "excluded_windows": 0,
+            "first_seen": "2026-10-06T09:00:00Z"
+          }
+        ]
+      }
+    ],
+    "window_start": "2026-10-05T09:00:00Z",
+    "window_end": "2026-10-06T09:00:00Z"
+  }
+}

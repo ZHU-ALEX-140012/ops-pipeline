@@ -1,0 +1,91 @@
+{
+  "name": "hb_02_stale_task",
+  "task": "heartbeat",
+  "note": "接口巡检超过预期间隔 6 倍没跑 —— 应告警并点名是哪个任务",
+  "expect": {
+    "should_alert": true,
+    "severity_any_of": [
+      "alert",
+      "critical"
+    ],
+    "mention_any": [
+      "api_watch"
+    ]
+  },
+  "run_doc": {
+    "schema": "ops/run@1",
+    "run_id": "eval-heartbeat",
+    "task": "heartbeat",
+    "started_at": "2026-10-06T09:00:00Z",
+    "finished_at": "2026-10-06T09:00:00Z",
+    "status": "degraded",
+    "metrics": {
+      "targets": 3,
+      "ok": 2,
+      "failed": 1,
+      "p50_ms": 0,
+      "p95_ms": 0,
+      "max_ms": 0,
+      "anomalies": 1
+    },
+    "samples": [
+      {
+        "target": "api_watch",
+        "metric": "heartbeat",
+        "value_num": 610.0,
+        "ok": 0,
+        "status_code": null,
+        "error": "超过预期间隔（610 分钟 > 100 分钟）",
+        "ts": "2026-10-06T09:00:00Z"
+      },
+      {
+        "target": "regression",
+        "metric": "heartbeat",
+        "value_num": 1270.0,
+        "ok": 1,
+        "status_code": null,
+        "error": null,
+        "ts": "2026-10-06T09:00:00Z"
+      },
+      {
+        "target": "daily_report",
+        "metric": "heartbeat",
+        "value_num": 1165.0,
+        "ok": 1,
+        "status_code": null,
+        "error": null,
+        "ts": "2026-10-06T09:00:00Z"
+      }
+    ],
+    "anomalies": [
+      {
+        "kind": "stale_run",
+        "target": "api_watch",
+        "detail": "api_watch 已 610 分钟未运行（预期不超过 100 分钟）",
+        "severity_hint": "alert"
+      }
+    ],
+    "notes": [],
+    "artifacts": [],
+    "baseline": {
+      "api_watch": {
+        "last_run_at": "2026-10-06T09:00:00Z",
+        "age_minutes": 610.0,
+        "limit_minutes": 100.0,
+        "stale": true
+      },
+      "regression": {
+        "last_run_at": "2026-10-06T09:00:00Z",
+        "age_minutes": 1270.0,
+        "limit_minutes": 2170.0,
+        "stale": false
+      },
+      "daily_report": {
+        "last_run_at": "2026-10-06T09:00:00Z",
+        "age_minutes": 1165.0,
+        "limit_minutes": 2170.0,
+        "stale": false
+      }
+    }
+  }
+}

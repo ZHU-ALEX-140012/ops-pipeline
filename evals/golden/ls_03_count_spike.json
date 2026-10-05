@@ -1,0 +1,135 @@
+{
+  "name": "ls_03_count_spike",
+  "task": "log_scan",
+  "note": "已知模板量级涨到 45 倍 —— 应告警并指出是「量级激增」而非新问题",
+  "expect": {
+    "should_alert": true,
+    "severity_any_of": [
+      "alert",
+      "notice"
+    ],
+    "mention_any": [
+      "量",
+      "倍",
+      "激增",
+      "变多",
+      "OOM",
+      "内存"
+    ]
+  },
+  "run_doc": {
+    "schema": "ops/run@1",
+    "run_id": "eval-log_scan",
+    "task": "log_scan",
+    "started_at": "2026-10-06T09:00:00Z",
+    "finished_at": "2026-10-06T09:00:00Z",
+    "status": "degraded",
+    "metrics": {
+      "targets": 1,
+      "ok": 0,
+      "failed": 1,
+      "sources": 1,
+      "lines_current": 3410,
+      "error_lines_current": 1350,
+      "templates": 3,
+      "anomalies": 2
+    },
+    "samples": [
+      {
+        "target": "app",
+        "metric": "log_template",
+        "value_num": 1180,
+        "ok": 1,
+        "ts": "2026-10-06T09:00:00Z",
+        "status_code": null,
+        "error": "INFO [http] GET /api/products status=200"
+      },
+      {
+        "target": "app",
+        "metric": "log_template",
+        "value_num": 1350,
+        "ok": 1,
+        "ts": "2026-10-06T09:00:00Z",
+        "status_code": null,
+        "error": "ERROR [cache] OOM evicting <*> keys"
+      },
+      {
+        "target": "app",
+        "metric": "log_template",
+        "value_num": 880,
+        "ok": 1,
+        "ts": "2026-10-06T09:00:00Z",
+        "status_code": null,
+        "error": "WARN [db] slow query <*>ms"
+      }
+    ],
+    "anomalies": [
+      {
+        "kind": "count_spike",
+        "target": "app",
+        "detail": "模板「ERROR [cache] OOM evicting <*> keys」本窗口 1350 次，基线 30 次（45.0 倍，阈值 3.0 倍）",
+        "severity_hint": "alert"
+      },
+      {
+        "kind": "count_spike",
+        "target": "app",
+        "detail": "模板「WARN [db] slow query <*>ms」本窗口 880 次，基线 45 次（19.6 倍，阈值 3.0 倍）",
+        "severity_hint": "notice"
+      }
+    ],
+    "notes": [],
+    "artifacts": [],
+    "sources": [
+      {
+        "name": "app",
+        "path": "data/logs/app.log",
+        "exists": true,
+        "total_lines": 4685,
+        "parsed_lines": 4685,
+        "unparsed_lines": 0,
+        "current_lines": 3410,
+        "baseline_lines": 1275,
+        "oldest_ts": "2026-10-05T09:00:00Z",
+        "newest_ts": "2026-10-06T09:00:00Z",
+        "error_lines_current": 1350,
+        "top_templates": [
+          {
+            "template": "INFO [http] GET /api/products status=200",
+            "level": "INFO",
+            "current": 1180,
+            "baseline": 1200,
+            "history_avg": 1200.0,
+            "history_median": 1200.0,
+            "history_windows": 7,
+            "excluded_windows": 0,
+            "first_seen": "2026-09-01T00:00:00Z"
+          },
+          {
+            "template": "ERROR [cache] OOM evicting <*> keys",
+            "level": "ERROR",
+            "current": 1350,
+            "baseline": 30,
+            "history_avg": 30.0,
+            "history_median": 30.0,
+            "history_windows": 7,
+            "excluded_windows": 0,
+            "first_seen": "2026-09-01T00:00:00Z"
+          },
+          {
+            "template": "WARN [db] slow query <*>ms",
+            "level": "WARN",
+            "current": 880,
+            "baseline": 45,
+            "history_avg": 45.0,
+            "history_median": 44.0,
+            "history_windows": 7,
+            "excluded_windows": 0,
+            "first_seen": "2026-09-01T00:00:00Z"
+          }
+        ]
+      }
+    ],
+    "window_start": "2026-10-05T09:00:00Z",
+    "window_end": "2026-10-06T09:00:00Z"
+  }
+}

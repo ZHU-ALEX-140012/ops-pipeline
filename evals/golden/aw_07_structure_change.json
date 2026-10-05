@@ -1,0 +1,98 @@
+{
+  "name": "aw_07_structure_change",
+  "task": "api_watch",
+  "note": "接口仍返回 200 但内容变了（字段更名）—— 应告警为结构性变更，不是故障",
+  "expect": {
+    "should_alert": true,
+    "severity_any_of": [
+      "alert",
+      "notice"
+    ],
+    "mention_any": [
+      "user_api"
+    ],
+    "mention_none": [
+      "全部目标失败"
+    ]
+  },
+  "run_doc": {
+    "schema": "ops/run@1",
+    "run_id": "eval-api_watch",
+    "task": "api_watch",
+    "started_at": "2026-10-06T09:00:00Z",
+    "finished_at": "2026-10-06T09:00:00Z",
+    "status": "degraded",
+    "metrics": {
+      "targets": 2,
+      "ok": 2,
+      "failed": 0,
+      "p50_ms": 130.0,
+      "p95_ms": 130.0,
+      "max_ms": 130.0,
+      "anomalies": 1
+    },
+    "samples": [
+      {
+        "target": "user_api",
+        "metric": "probe",
+        "value_num": 96.0,
+        "value_text": "NEW",
+        "ok": 1,
+        "ts": "2026-10-06T09:00:00Z",
+        "status_code": 200,
+        "error": null,
+        "body_len": 64,
+        "content_type": "application/json; charset=utf-8"
+      },
+      {
+        "target": "frankfurter",
+        "metric": "probe",
+        "value_num": 130.0,
+        "value_text": "h2",
+        "ok": 1,
+        "ts": "2026-10-06T09:00:00Z",
+        "status_code": 200,
+        "error": null,
+        "body_len": 64,
+        "content_type": "application/json; charset=utf-8"
+      }
+    ],
+    "anomalies": [
+      {
+        "kind": "structure_change",
+        "target": "user_api",
+        "detail": "响应体指纹由 OLD 变为 NEW（主流指纹出现 38/40 次），HTTP 仍为 200 —— 疑似契约变更而非故障",
+        "severity_hint": "alert"
+      }
+    ],
+    "notes": [],
+    "artifacts": [],
+    "baseline": {
+      "user_api": {
+        "samples": 40,
+        "p50_ms": 95.0,
+        "p95_ms": 110.0,
+        "consecutive_failures": 0,
+        "streak_span_minutes": null,
+        "failures_24h": 0,
+        "modal_body_hash": "OLD",
+        "current_body_hash": "NEW"
+      },
+      "frankfurter": {
+        "samples": 40,
+        "p50_ms": 130.0,
+        "p95_ms": 160.0,
+        "consecutive_failures": 0,
+        "streak_span_minutes": null,
+        "failures_24h": 0,
+        "modal_body_hash": "h2",
+        "current_body_hash": "h2"
+      }
+    },
+    "thresholds": {
+      "consecutive_failures": 3,
+      "latency_p95_multiple": 3.0,
+      "cold_start_min_samples": 20
+    }
+  }
+}

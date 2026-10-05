@@ -1,0 +1,24 @@
+{
+  "count": 19,
+  "scenarios": [
+    "aw_01_healthy",
+    "aw_02_single_target_down",
+    "aw_03_all_targets_down",
+    "aw_04_latency_mild",
+    "aw_05_latency_severe",
+    "aw_06_cold_start",
+    "aw_07_structure_change",
+    "rg_01_all_pass",
+    "rg_02_single_failure",
+    "rg_03_clustered_failures",
+    "rg_04_mixed_independent",
+    "ls_01_clean",
+    "ls_02_new_error_template",
+    "ls_03_count_spike",
+    "ls_04_log_stale",
+    "ls_05_parse_ratio_low",
+    "ls_06_new_info_template_benign",
+    "hb_01_all_fresh",
+    "hb_02_stale_task"
+  ]
+}

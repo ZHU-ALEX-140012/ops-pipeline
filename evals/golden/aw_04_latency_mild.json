@@ -1,0 +1,85 @@
+{
+  "name": "aw_04_latency_mild",
+  "task": "api_watch",
+  "note": "延迟略高于基线但远未到阈值 —— 反向用例：不该告警（防误报）",
+  "expect": {
+    "should_alert": false,
+    "severity_any_of": [
+      "info",
+      "notice"
+    ]
+  },
+  "run_doc": {
+    "schema": "ops/run@1",
+    "run_id": "eval-api_watch",
+    "task": "api_watch",
+    "started_at": "2026-10-06T09:00:00Z",
+    "finished_at": "2026-10-06T09:00:00Z",
+    "status": "ok",
+    "metrics": {
+      "targets": 2,
+      "ok": 2,
+      "failed": 0,
+      "p50_ms": 180.0,
+      "p95_ms": 180.0,
+      "max_ms": 180.0,
+      "anomalies": 0
+    },
+    "samples": [
+      {
+        "target": "worldtime",
+        "metric": "probe",
+        "value_num": 180.0,
+        "value_text": "h1",
+        "ok": 1,
+        "ts": "2026-10-06T09:00:00Z",
+        "status_code": 200,
+        "error": null,
+        "body_len": 64,
+        "content_type": "application/json; charset=utf-8"
+      },
+      {
+        "target": "frankfurter",
+        "metric": "probe",
+        "value_num": 140.0,
+        "value_text": "h2",
+        "ok": 1,
+        "ts": "2026-10-06T09:00:00Z",
+        "status_code": 200,
+        "error": null,
+        "body_len": 64,
+        "content_type": "application/json; charset=utf-8"
+      }
+    ],
+    "anomalies": [],
+    "notes": [],
+    "artifacts": [],
+    "baseline": {
+      "worldtime": {
+        "samples": 40,
+        "p50_ms": 120.0,
+        "p95_ms": 150.0,
+        "consecutive_failures": 0,
+        "streak_span_minutes": null,
+        "failures_24h": 0,
+        "modal_body_hash": "h1",
+        "current_body_hash": "h1"
+      },
+      "frankfurter": {
+        "samples": 40,
+        "p50_ms": 130.0,
+        "p95_ms": 160.0,
+        "consecutive_failures": 0,
+        "streak_span_minutes": null,
+        "failures_24h": 0,
+        "modal_body_hash": "h2",
+        "current_body_hash": "h2"
+      }
+    },
+    "thresholds": {
+      "consecutive_failures": 3,
+      "latency_p95_multiple": 3.0,
+      "cold_start_min_samples": 20
+    }
+  }
+}

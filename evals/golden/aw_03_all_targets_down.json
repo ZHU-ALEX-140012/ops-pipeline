@@ -1,0 +1,134 @@
+{
+  "name": "aw_03_all_targets_down",
+  "task": "api_watch",
+  "note": "三个目标同一轮全部失败 —— 更像本机网络问题，应严重告警",
+  "expect": {
+    "should_alert": true,
+    "severity_any_of": [
+      "critical",
+      "alert"
+    ],
+    "mention_any": [
+      "网络",
+      "DNS",
+      "解析",
+      "本机",
+      "全部",
+      "三个"
+    ]
+  },
+  "run_doc": {
+    "schema": "ops/run@1",
+    "run_id": "eval-api_watch",
+    "task": "api_watch",
+    "started_at": "2026-10-06T09:00:00Z",
+    "finished_at": "2026-10-06T09:00:00Z",
+    "status": "degraded",
+    "metrics": {
+      "targets": 3,
+      "ok": 0,
+      "failed": 3,
+      "p50_ms": 0.0,
+      "p95_ms": 0.0,
+      "max_ms": 0.0,
+      "anomalies": 3
+    },
+    "samples": [
+      {
+        "target": "worldtime",
+        "metric": "probe",
+        "value_num": 0.0,
+        "value_text": null,
+        "ok": 0,
+        "ts": "2026-10-06T09:00:00Z",
+        "status_code": null,
+        "error": "URLError: [Errno 11001] getaddrinfo failed",
+        "body_len": null,
+        "content_type": null
+      },
+      {
+        "target": "frankfurter",
+        "metric": "probe",
+        "value_num": 0.0,
+        "value_text": null,
+        "ok": 0,
+        "ts": "2026-10-06T09:00:00Z",
+        "status_code": null,
+        "error": "URLError: [Errno 11001] getaddrinfo failed",
+        "body_len": null,
+        "content_type": null
+      },
+      {
+        "target": "github_rate",
+        "metric": "probe",
+        "value_num": 0.0,
+        "value_text": null,
+        "ok": 0,
+        "ts": "2026-10-06T09:00:00Z",
+        "status_code": null,
+        "error": "URLError: [Errno 11001] getaddrinfo failed",
+        "body_len": null,
+        "content_type": null
+      }
+    ],
+    "anomalies": [
+      {
+        "kind": "consecutive_failure",
+        "target": "worldtime",
+        "detail": "连续 3 次失败（阈值 3）；DNS 解析失败 getaddrinfo failed",
+        "severity_hint": "critical"
+      },
+      {
+        "kind": "consecutive_failure",
+        "target": "frankfurter",
+        "detail": "连续 3 次失败（阈值 3）；DNS 解析失败 getaddrinfo failed",
+        "severity_hint": "critical"
+      },
+      {
+        "kind": "consecutive_failure",
+        "target": "github_rate",
+        "detail": "连续 3 次失败（阈值 3）；DNS 解析失败 getaddrinfo failed",
+        "severity_hint": "critical"
+      }
+    ],
+    "notes": [],
+    "artifacts": [],
+    "baseline": {
+      "worldtime": {
+        "samples": 40,
+        "p50_ms": 0.0,
+        "p95_ms": 0.0,
+        "consecutive_failures": 3,
+        "streak_span_minutes": 120.0,
+        "failures_24h": 3,
+        "modal_body_hash": null,
+        "current_body_hash": null
+      },
+      "frankfurter": {
+        "samples": 40,
+        "p50_ms": 0.0,
+        "p95_ms": 0.0,
+        "consecutive_failures": 3,
+        "streak_span_minutes": 120.0,
+        "failures_24h": 3,
+        "modal_body_hash": null,
+        "current_body_hash": null
+      },
+      "github_rate": {
+        "samples": 40,
+        "p50_ms": 0.0,
+        "p95_ms": 0.0,
+        "consecutive_failures": 3,
+        "streak_span_minutes": 120.0,
+        "failures_24h": 3,
+        "modal_body_hash": null,
+        "current_body_hash": null
+      }
+    },
+    "thresholds": {
+      "consecutive_failures": 3,
+      "latency_p95_multiple": 3.0,
+      "cold_start_min_samples": 20
+    }
+  }
+}

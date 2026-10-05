@@ -1,0 +1,213 @@
+{
+  "name": "ls_01_clean",
+  "task": "log_scan",
+  "note": "8 个模板量级与基线一致 —— 反向用例：不该告警",
+  "expect": {
+    "should_alert": false,
+    "severity_any_of": [
+      "info"
+    ]
+  },
+  "run_doc": {
+    "schema": "ops/run@1",
+    "run_id": "eval-log_scan",
+    "task": "log_scan",
+    "started_at": "2026-10-06T09:00:00Z",
+    "finished_at": "2026-10-06T09:00:00Z",
+    "status": "ok",
+    "metrics": {
+      "targets": 1,
+      "ok": 1,
+      "failed": 0,
+      "sources": 1,
+      "lines_current": 3523,
+      "error_lines_current": 11,
+      "templates": 8,
+      "anomalies": 0
+    },
+    "samples": [
+      {
+        "target": "app",
+        "metric": "log_template",
+        "value_num": 1180,
+        "ok": 1,
+        "ts": "2026-10-06T09:00:00Z",
+        "status_code": null,
+        "error": "INFO [http] GET /api/products status=200"
+      },
+      {
+        "target": "app",
+        "metric": "log_template",
+        "value_num": 1120,
+        "ok": 1,
+        "ts": "2026-10-06T09:00:00Z",
+        "status_code": null,
+        "error": "INFO [cache] hit key=product:<*>"
+      },
+      {
+        "target": "app",
+        "metric": "log_template",
+        "value_num": 640,
+        "ok": 1,
+        "ts": "2026-10-06T09:00:00Z",
+        "status_code": null,
+        "error": "INFO [db] query took <*>ms"
+      },
+      {
+        "target": "app",
+        "metric": "log_template",
+        "value_num": 42,
+        "ok": 1,
+        "ts": "2026-10-06T09:00:00Z",
+        "status_code": null,
+        "error": "WARN [db] slow query <*>ms"
+      },
+      {
+        "target": "app",
+        "metric": "log_template",
+        "value_num": 8,
+        "ok": 1,
+        "ts": "2026-10-06T09:00:00Z",
+        "status_code": null,
+        "error": "ERROR [db] connection timeout after <*>ms"
+      },
+      {
+        "target": "app",
+        "metric": "log_template",
+        "value_num": 310,
+        "ok": 1,
+        "ts": "2026-10-06T09:00:00Z",
+        "status_code": null,
+        "error": "INFO [http] POST /api/orders status=201"
+      },
+      {
+        "target": "app",
+        "metric": "log_template",
+        "value_num": 220,
+        "ok": 1,
+        "ts": "2026-10-06T09:00:00Z",
+        "status_code": null,
+        "error": "INFO [auth] token refreshed user=<*>"
+      },
+      {
+        "target": "app",
+        "metric": "log_template",
+        "value_num": 3,
+        "ok": 1,
+        "ts": "2026-10-06T09:00:00Z",
+        "status_code": null,
+        "error": "ERROR [cache] OOM evicting <*> keys"
+      }
+    ],
+    "anomalies": [],
+    "notes": [],
+    "artifacts": [],
+    "sources": [
+      {
+        "name": "app",
+        "path": "data/logs/app.log",
+        "exists": true,
+        "total_lines": 7105,
+        "parsed_lines": 7105,
+        "unparsed_lines": 0,
+        "current_lines": 3523,
+        "baseline_lines": 3582,
+        "oldest_ts": "2026-10-05T09:00:00Z",
+        "newest_ts": "2026-10-06T09:00:00Z",
+        "error_lines_current": 11,
+        "top_templates": [
+          {
+            "template": "INFO [http] GET /api/products status=200",
+            "level": "INFO",
+            "current": 1180,
+            "baseline": 1200,
+            "history_avg": 1200.0,
+            "history_median": 1200.0,
+            "history_windows": 7,
+            "excluded_windows": 0,
+            "first_seen": "2026-09-01T00:00:00Z"
+          },
+          {
+            "template": "INFO [cache] hit key=product:<*>",
+            "level": "INFO",
+            "current": 1120,
+            "baseline": 1150,
+            "history_avg": 1150.0,
+            "history_median": 1150.0,
+            "history_windows": 7,
+            "excluded_windows": 0,
+            "first_seen": "2026-09-01T00:00:00Z"
+          },
+          {
+            "template": "INFO [db] query took <*>ms",
+            "level": "INFO",
+            "current": 640,
+            "baseline": 660,
+            "history_avg": 660.0,
+            "history_median": 660.0,
+            "history_windows": 7,
+            "excluded_windows": 0,
+            "first_seen": "2026-09-01T00:00:00Z"
+          },
+          {
+            "template": "WARN [db] slow query <*>ms",
+            "level": "WARN",
+            "current": 42,
+            "baseline": 45,
+            "history_avg": 45.0,
+            "history_median": 45.0,
+            "history_windows": 7,
+            "excluded_windows": 0,
+            "first_seen": "2026-09-01T00:00:00Z"
+          },
+          {
+            "template": "ERROR [db] connection timeout after <*>ms",
+            "level": "ERROR",
+            "current": 8,
+            "baseline": 9,
+            "history_avg": 9.0,
+            "history_median": 9.0,
+            "history_windows": 7,
+            "excluded_windows": 0,
+            "first_seen": "2026-09-01T00:00:00Z"
+          },
+          {
+            "template": "INFO [http] POST /api/orders status=201",
+            "level": "INFO",
+            "current": 310,
+            "baseline": 300,
+            "history_avg": 300.0,
+            "history_median": 300.0,
+            "history_windows": 7,
+            "excluded_windows": 0,
+            "first_seen": "2026-09-01T00:00:00Z"
+          },
+          {
+            "template": "INFO [auth] token refreshed user=<*>",
+            "level": "INFO",
+            "current": 220,
+            "baseline": 215,
+            "history_avg": 215.0,
+            "history_median": 215.0,
+            "history_windows": 7,
+            "excluded_windows": 0,
+            "first_seen": "2026-09-01T00:00:00Z"
+          },
+          {
+            "template": "ERROR [cache] OOM evicting <*> keys",
+            "level": "ERROR",
+            "current": 3,
+            "baseline": 3,
+            "history_avg": 3.0,
+            "history_median": 3.0,
+            "history_windows": 7,
+            "excluded_windows": 0,
+            "first_seen": "2026-09-01T00:00:00Z"
+          }
+        ]
+      }
+    ],
+    "window_start": "2026-10-05T09:00:00Z",
+    "window_end": "2026-10-06T09:00:00Z"
+  }
+}

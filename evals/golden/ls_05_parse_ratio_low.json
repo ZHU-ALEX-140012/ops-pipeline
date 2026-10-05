@@ -1,0 +1,109 @@
+{
+  "name": "ls_05_parse_ratio_low",
+  "task": "log_scan",
+  "note": "六成日志解析失败（格式变了）—— 应告警，且不能声称「日志正常」",
+  "expect": {
+    "should_alert": true,
+    "severity_any_of": [
+      "alert",
+      "notice"
+    ],
+    "mention_any": [
+      "解析",
+      "格式"
+    ],
+    "mention_none": [
+      "一切正常",
+      "日志正常"
+    ]
+  },
+  "run_doc": {
+    "schema": "ops/run@1",
+    "run_id": "eval-log_scan",
+    "task": "log_scan",
+    "started_at": "2026-10-06T09:00:00Z",
+    "finished_at": "2026-10-06T09:00:00Z",
+    "status": "degraded",
+    "metrics": {
+      "targets": 1,
+      "ok": 0,
+      "failed": 1,
+      "sources": 1,
+      "lines_current": 780,
+      "error_lines_current": 0,
+      "templates": 2,
+      "anomalies": 1
+    },
+    "samples": [
+      {
+        "target": "app",
+        "metric": "log_template",
+        "value_num": 400,
+        "ok": 1,
+        "ts": "2026-10-06T09:00:00Z",
+        "status_code": null,
+        "error": "INFO [http] GET /api/products status=200"
+      },
+      {
+        "target": "app",
+        "metric": "log_template",
+        "value_num": 380,
+        "ok": 1,
+        "ts": "2026-10-06T09:00:00Z",
+        "status_code": null,
+        "error": "INFO [cache] hit key=product:<*>"
+      }
+    ],
+    "anomalies": [
+      {
+        "kind": "parse_ratio_low",
+        "target": "app",
+        "detail": "1930 行中 1150 行无法解析（59.6%），阈值 30% —— 日志格式可能变了",
+        "severity_hint": "alert"
+      }
+    ],
+    "notes": [],
+    "artifacts": [],
+    "sources": [
+      {
+        "name": "app",
+        "path": "data/logs/app.log",
+        "exists": true,
+        "total_lines": 3130,
+        "parsed_lines": 780,
+        "unparsed_lines": 1150,
+        "current_lines": 780,
+        "baseline_lines": 2350,
+        "oldest_ts": "2026-10-05T09:00:00Z",
+        "newest_ts": "2026-10-06T09:00:00Z",
+        "error_lines_current": 0,
+        "top_templates": [
+          {
+            "template": "INFO [http] GET /api/products status=200",
+            "level": "INFO",
+            "current": 400,
+            "baseline": 1200,
+            "history_avg": 1200.0,
+            "history_median": 1200.0,
+            "history_windows": 7,
+            "excluded_windows": 0,
+            "first_seen": "2026-09-01T00:00:00Z"
+          },
+          {
+            "template": "INFO [cache] hit key=product:<*>",
+            "level": "INFO",
+            "current": 380,
+            "baseline": 1150,
+            "history_avg": 1150.0,
+            "history_median": 1150.0,
+            "history_windows": 7,
+            "excluded_windows": 0,
+            "first_seen": "2026-09-01T00:00:00Z"
+          }
+        ]
+      }
+    ],
+    "window_start": "2026-10-05T09:00:00Z",
+    "window_end": "2026-10-06T09:00:00Z"
+  }
+}

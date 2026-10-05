@@ -1,0 +1,193 @@
+{
+  "name": "rg_02_single_failure",
+  "task": "regression",
+  "note": "单条用例失败（字段缺失）—— 应告警并点出是哪条",
+  "expect": {
+    "should_alert": true,
+    "severity_any_of": [
+      "alert",
+      "notice"
+    ],
+    "mention_any": [
+      "full_name",
+      "字段",
+      "user_detail"
+    ]
+  },
+  "run_doc": {
+    "schema": "ops/run@1",
+    "run_id": "eval-regression",
+    "task": "regression",
+    "started_at": "2026-10-06T09:00:00Z",
+    "finished_at": "2026-10-06T09:00:00Z",
+    "status": "degraded",
+    "metrics": {
+      "targets": 7,
+      "ok": 6,
+      "failed": 1,
+      "total_cases": 7,
+      "passed": 6,
+      "p50_ms": 15.0,
+      "p95_ms": 18.0,
+      "max_ms": 18.0,
+      "anomalies": 1
+    },
+    "samples": [
+      {
+        "target": "health_contract",
+        "metric": "case",
+        "value_num": 14.0,
+        "ok": 1,
+        "ts": "2026-10-06T09:00:00Z",
+        "status_code": 200,
+        "error": null
+      },
+      {
+        "target": "user_detail_contract",
+        "metric": "case",
+        "value_num": 15.0,
+        "ok": 0,
+        "ts": "2026-10-06T09:00:00Z",
+        "status_code": 200,
+        "error": null
+      },
+      {
+        "target": "user_list_contract",
+        "metric": "case",
+        "value_num": 18.0,
+        "ok": 1,
+        "ts": "2026-10-06T09:00:00Z",
+        "status_code": 200,
+        "error": null
+      },
+      {
+        "target": "order_detail_contract",
+        "metric": "case",
+        "value_num": 15.0,
+        "ok": 1,
+        "ts": "2026-10-06T09:00:00Z",
+        "status_code": 200,
+        "error": null
+      },
+      {
+        "target": "order_list_limit",
+        "metric": "case",
+        "value_num": 17.0,
+        "ok": 1,
+        "ts": "2026-10-06T09:00:00Z",
+        "status_code": 200,
+        "error": null
+      },
+      {
+        "target": "not_found_contract",
+        "metric": "case",
+        "value_num": 12.0,
+        "ok": 1,
+        "ts": "2026-10-06T09:00:00Z",
+        "status_code": 200,
+        "error": null
+      },
+      {
+        "target": "error_shape_contract",
+        "metric": "case",
+        "value_num": 13.0,
+        "ok": 1,
+        "ts": "2026-10-06T09:00:00Z",
+        "status_code": 200,
+        "error": null
+      }
+    ],
+    "anomalies": [
+      {
+        "kind": "case_failed",
+        "target": "user_detail_contract",
+        "detail": "/api/users/1 字段 full_name 期望类型 string，实际缺失",
+        "severity_hint": "alert"
+      }
+    ],
+    "notes": [],
+    "artifacts": [],
+    "variant": "v1",
+    "cases": [
+      {
+        "name": "health_contract",
+        "path": "/api/health",
+        "method": "GET",
+        "expected_status": 200,
+        "actual_status": 200,
+        "latency_ms": 14.0,
+        "ok": true,
+        "failures": [],
+        "body_preview": ""
+      },
+      {
+        "name": "user_detail_contract",
+        "path": "/api/users/1",
+        "method": "GET",
+        "expected_status": 200,
+        "actual_status": 200,
+        "latency_ms": 15.0,
+        "ok": false,
+        "failures": [
+          "字段 full_name 期望类型 string，实际缺失"
+        ],
+        "body_preview": ""
+      },
+      {
+        "name": "user_list_contract",
+        "path": "/api/users",
+        "method": "GET",
+        "expected_status": 200,
+        "actual_status": 200,
+        "latency_ms": 18.0,
+        "ok": true,
+        "failures": [],
+        "body_preview": ""
+      },
+      {
+        "name": "order_detail_contract",
+        "path": "/api/orders/1",
+        "method": "GET",
+        "expected_status": 200,
+        "actual_status": 200,
+        "latency_ms": 15.0,
+        "ok": true,
+        "failures": [],
+        "body_preview": ""
+      },
+      {
+        "name": "order_list_limit",
+        "path": "/api/orders?limit=2",
+        "method": "GET",
+        "expected_status": 200,
+        "actual_status": 200,
+        "latency_ms": 17.0,
+        "ok": true,
+        "failures": [],
+        "body_preview": ""
+      },
+      {
+        "name": "not_found_contract",
+        "path": "/api/users/9999",
+        "method": "GET",
+        "expected_status": 200,
+        "actual_status": 200,
+        "latency_ms": 12.0,
+        "ok": true,
+        "failures": [],
+        "body_preview": ""
+      },
+      {
+        "name": "error_shape_contract",
+        "path": "/api/boom",
+        "method": "GET",
+        "expected_status": 200,
+        "actual_status": 200,
+        "latency_ms": 13.0,
+        "ok": true,
+        "failures": [],
+        "body_preview": ""
+      }
+    ]
+  }
+}

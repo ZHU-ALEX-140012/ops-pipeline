@@ -1,0 +1,144 @@
+{
+  "name": "rg_04_mixed_independent",
+  "task": "regression",
+  "note": "两条失败用例根因不同（字段缺失 + 状态码错误）—— 不应当成同一个根因",
+  "expect": {
+    "should_alert": true,
+    "severity_any_of": [
+      "alert",
+      "notice"
+    ],
+    "mention_any": [
+      "404",
+      "状态码",
+      "字段",
+      "两个",
+      "两处",
+      "独立"
+    ]
+  },
+  "run_doc": {
+    "schema": "ops/run@1",
+    "run_id": "eval-regression",
+    "task": "regression",
+    "started_at": "2026-10-06T09:00:00Z",
+    "finished_at": "2026-10-06T09:00:00Z",
+    "status": "degraded",
+    "metrics": {
+      "targets": 4,
+      "ok": 2,
+      "failed": 2,
+      "total_cases": 4,
+      "passed": 2,
+      "p50_ms": 15.0,
+      "p95_ms": 15.0,
+      "max_ms": 15.0,
+      "anomalies": 2
+    },
+    "samples": [
+      {
+        "target": "user_detail_contract",
+        "metric": "case",
+        "value_num": 15.0,
+        "ok": 0,
+        "ts": "2026-10-06T09:00:00Z",
+        "status_code": 200,
+        "error": null
+      },
+      {
+        "target": "not_found_contract",
+        "metric": "case",
+        "value_num": 12.0,
+        "ok": 0,
+        "ts": "2026-10-06T09:00:00Z",
+        "status_code": 200,
+        "error": null
+      },
+      {
+        "target": "health_contract",
+        "metric": "case",
+        "value_num": 14.0,
+        "ok": 1,
+        "ts": "2026-10-06T09:00:00Z",
+        "status_code": 200,
+        "error": null
+      },
+      {
+        "target": "order_detail_contract",
+        "metric": "case",
+        "value_num": 15.0,
+        "ok": 1,
+        "ts": "2026-10-06T09:00:00Z",
+        "status_code": 200,
+        "error": null
+      }
+    ],
+    "anomalies": [
+      {
+        "kind": "case_failed",
+        "target": "user_detail_contract",
+        "detail": "/api/users/1 字段 full_name 期望类型 string，实际缺失",
+        "severity_hint": "alert"
+      },
+      {
+        "kind": "case_failed",
+        "target": "not_found_contract",
+        "detail": "/api/users/9999 期望状态码 404，实际 200",
+        "severity_hint": "alert"
+      }
+    ],
+    "notes": [],
+    "artifacts": [],
+    "variant": "v1",
+    "cases": [
+      {
+        "name": "user_detail_contract",
+        "path": "/api/users/1",
+        "method": "GET",
+        "expected_status": 200,
+        "actual_status": 200,
+        "latency_ms": 15.0,
+        "ok": false,
+        "failures": [
+          "字段 full_name 期望类型 string，实际缺失"
+        ],
+        "body_preview": ""
+      },
+      {
+        "name": "not_found_contract",
+        "path": "/api/users/9999",
+        "method": "GET",
+        "expected_status": 200,
+        "actual_status": 200,
+        "latency_ms": 12.0,
+        "ok": false,
+        "failures": [
+          "期望状态码 404，实际 200"
+        ],
+        "body_preview": ""
+      },
+      {
+        "name": "health_contract",
+        "path": "/api/health",
+        "method": "GET",
+        "expected_status": 200,
+        "actual_status": 200,
+        "latency_ms": 14.0,
+        "ok": true,
+        "failures": [],
+        "body_preview": ""
+      },
+      {
+        "name": "order_detail_contract",
+        "path": "/api/orders/1",
+        "method": "GET",
+        "expected_status": 200,
+        "actual_status": 200,
+        "latency_ms": 15.0,
+        "ok": true,
+        "failures": [],
+        "body_preview": ""
+      }
+    ]
+  }
+}

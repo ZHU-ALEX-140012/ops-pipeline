@@ -1,0 +1,80 @@
+{
+  "name": "hb_01_all_fresh",
+  "task": "heartbeat",
+  "note": "所有任务都在预期间隔内运行过 —— 反向用例：不该告警",
+  "expect": {
+    "should_alert": false,
+    "severity_any_of": [
+      "info"
+    ]
+  },
+  "run_doc": {
+    "schema": "ops/run@1",
+    "run_id": "eval-heartbeat",
+    "task": "heartbeat",
+    "started_at": "2026-10-06T09:00:00Z",
+    "finished_at": "2026-10-06T09:00:00Z",
+    "status": "ok",
+    "metrics": {
+      "targets": 3,
+      "ok": 3,
+      "failed": 0,
+      "p50_ms": 0,
+      "p95_ms": 0,
+      "max_ms": 0,
+      "anomalies": 0
+    },
+    "samples": [
+      {
+        "target": "api_watch",
+        "metric": "heartbeat",
+        "value_num": 22.0,
+        "ok": 1,
+        "status_code": null,
+        "error": null,
+        "ts": "2026-10-06T09:00:00Z"
+      },
+      {
+        "target": "regression",
+        "metric": "heartbeat",
+        "value_num": 1270.0,
+        "ok": 1,
+        "status_code": null,
+        "error": null,
+        "ts": "2026-10-06T09:00:00Z"
+      },
+      {
+        "target": "daily_report",
+        "metric": "heartbeat",
+        "value_num": 1165.0,
+        "ok": 1,
+        "status_code": null,
+        "error": null,
+        "ts": "2026-10-06T09:00:00Z"
+      }
+    ],
+    "anomalies": [],
+    "notes": [],
+    "artifacts": [],
+    "baseline": {
+      "api_watch": {
+        "last_run_at": "2026-10-06T09:00:00Z",
+        "age_minutes": 22.0,
+        "limit_minutes": 100.0,
+        "stale": false
+      },
+      "regression": {
+        "last_run_at": "2026-10-06T09:00:00Z",
+        "age_minutes": 1270.0,
+        "limit_minutes": 2170.0,
+        "stale": false
+      },
+      "daily_report": {
+        "last_run_at": "2026-10-06T09:00:00Z",
+        "age_minutes": 1165.0,
+        "limit_minutes": 2170.0,
+        "stale": false
+      }
+    }
+  }
+}
