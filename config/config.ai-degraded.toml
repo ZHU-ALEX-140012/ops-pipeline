@@ -1,0 +1,49 @@
+# 降级路径验证配置：故意把 ai.cmd 指向不存在的路径，模拟"AI 判断层完全不可用"。
+#
+# 要验证的性质：**AI 挂了，告警照发** —— 只是结论会标注"未经 AI 分析"。
+#   python -m ops --task api_watch --once --config config/config.ai-degraded.toml
+
+[project]
+root = ""   # 留空 = 自动使用项目目录
+timezone_display = "Asia/Shanghai"
+
+[ai]
+enabled = true
+profile = "headless"
+patch = "config/dsh-headless.patch.yml"
+cmd = "D:/nonexistent/dsh-does-not-exist.cmd"   # ← 故意写错
+timeout_seconds = 30
+max_calls_per_day = 30
+on_failure = "degrade"
+
+[api_watch]
+interval_minutes = 60
+timeout_ms = 3000
+retries = 0
+rate_limit_ms = 0
+
+[[api_watch.targets]]
+name = "fault_drill"
+url = "http://127.0.0.1:8788/health"
+expect = 200
+
+[api_watch.thresholds]
+consecutive_failures = 1
+streak_max_age_hours = 24
+latency_p95_multiple = 3.0
+cold_start_min_samples = 20
+
+[alert]
+primary = "wecom"
+default_cooldown_minutes = 60
+min_cooldown_minutes = 15
+quiet_hours = ""
+
+[alert.wecom]
+webhook_env = "OPS_WECOM_WEBHOOK_DEGRADED_TEST"
+
+[alert.email]
+enabled = false
+
+[schedule.heartbeat_expect]
+api_watch = 60

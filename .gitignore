@@ -1,0 +1,14 @@
+# 运行数据：数据库、报告、原始留痕、日志、AI 会话状态
+data/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# 凭据与本地覆盖：绝不入库
+.env
+config/config.local.toml
+config/secrets.local.toml

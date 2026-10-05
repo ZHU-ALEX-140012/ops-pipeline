@@ -1,0 +1,37 @@
+# 让 headless profile 复用桌面端已登录的 DeepSeek 账号，而不是要求单独的 API Key。
+#
+# 背景：headless profile 默认 provider 是 deepseek-official（由 llm-deepseek 提供，
+# 需要 DEEPSEEK_API_KEY）。而 desktop profile 用的是 deepseek-account（由
+# llm-deepseek-account + deepseek-account-platform 提供，走账号登录）。
+# 这两个插件在 headless 的 bundle 里同样存在，所以一行 patch 就能切过去。
+#
+# 用法（ops-pipeline 会自动带上，见 config.toml 的 ai.patch）：
+#   dsh --profile headless --patch config/dsh-headless.patch.yml "<任务>"
+#
+# 放在项目里而不是 ~/.dsh，是为了可版本化、可复现，也不改动你的既有配置。
+
+- id: agent-default-model
+  name: "@deepseek-ai/dsh-agent-default-model"
+  config:
+    provider: deepseek-account
+    model: deepseek-flash
+
+# 凭据仍然从"真实的" ~/.dsh 读取，尽管判断层子进程的 DSH_HOME 被重定向到了项目内。
+#
+# 为什么需要这一条：aibridge 把子进程的 DSH_HOME 指到 data/dsh-home（见 config.toml 的
+# ai.dsh_home），好让 profile / 会话 / 存储的写入全部留在项目内、不再触发沙箱提权。
+# 但账号令牌（deepseek-account-platform/default 与 .../device）也住在
+# $DSH_HOME/.credentials.yaml 里，跟着一起搬走就会报 ACCOUNT_SIGN_IN_REQUIRED。
+# 所以这里把"凭据的家"单独钉回真实家目录。
+#
+# 写法说明：dsh-credentials-local 的 dshHome 会经过 resolveDshHome → expandHomePath，
+# 支持 "~"、"~/"、"~\" 前缀并展开为 %USERPROFILE%，因此这里不写死任何机器路径，
+# 项目整体搬移或换用户名都不用改这一行。
+#
+# 已知代价：令牌刷新/失效清理（401 后 rejectToken）要写这个文件，而它在工作区之外，
+# 在受限沙箱里这次写入会被拒。该写入在调用侧被 try/catch 吞掉，不影响本次判断结果，
+# 但判断层自己无法更新或清除过期的账号令牌 —— 那件事仍由桌面端负责。
+- id: credentials
+  name: "@deepseek-ai/dsh-credentials-local"
+  config:
+    dshHome: "~/.dsh"

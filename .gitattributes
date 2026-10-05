@@ -1,0 +1,24 @@
+# 统一换行符，避免 Windows 上出现"整文件都改了"的假 diff。
+# 源码用 LF（跨平台一致），Windows 脚本用 CRLF（cmd.exe / PowerShell 的惯例）。
+* text=auto
+
+*.py    text eol=lf
+*.md    text eol=lf
+*.toml  text eol=lf
+*.yml   text eol=lf
+*.yaml  text eol=lf
+*.json  text eol=lf
+
+*.ps1   text eol=crlf
+*.cmd   text eol=crlf
+*.bat   text eol=crlf
+
+# 二进制：不要做任何文本处理
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.ico   binary
+*.db    binary
+
+# 这些是生成物，diff 没有意义
+data/**  -diff

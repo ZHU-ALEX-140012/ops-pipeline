@@ -1,0 +1,51 @@
+# AI 判断层验证配置：故意让靶子必定失败，逼出异常，从而触发 AI 归因。
+#
+#   python tools/fault_drill.py --port 8788 --fail-rate 1.0
+#   python -m ops --task api_watch --once --config config/config.ai-test.toml
+
+[project]
+root = ""   # 留空 = 自动使用项目目录
+timezone_display = "Asia/Shanghai"
+
+[ai]
+enabled = true
+profile = "headless"
+patch = "config/dsh-headless.patch.yml"
+cmd = "D:/AITool/deepseek harness/resources/runtime/cli/bin/dsh.cmd"
+json_events = true
+timeout_seconds = 300
+max_calls_per_day = 30
+on_failure = "degrade"
+
+[api_watch]
+interval_minutes = 60
+timeout_ms = 3000
+retries = 0
+rate_limit_ms = 0
+always_ai = false
+
+[[api_watch.targets]]
+name = "fault_drill"
+url = "http://127.0.0.1:8788/health"
+expect = 200
+
+[api_watch.thresholds]
+# 设成 1 是为了让第一轮失败就产生异常线索，从而立刻触发 AI 判断
+consecutive_failures = 1
+latency_p95_multiple = 3.0
+cold_start_min_samples = 20
+
+[alert]
+primary = "wecom"
+default_cooldown_minutes = 60
+min_cooldown_minutes = 15
+quiet_hours = ""
+
+[alert.wecom]
+webhook_env = "OPS_WECOM_WEBHOOK_AI_TEST"   # 不存在 → dry-run，落本地日志
+
+[alert.email]
+enabled = false
+
+[schedule.heartbeat_expect]
+api_watch = 60

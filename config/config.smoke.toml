@@ -1,0 +1,46 @@
+# 冒烟测试专用配置：只打本地自建靶子，不依赖外网、不依赖 AI。
+# 用途：端到端验证「采集 → 判定 → 告警 → 冷却 → 报告」这条链路真的通。
+#
+#   python tools/fault_drill.py --port 8788
+#   python -m ops --task api_watch --once --config config/config.smoke.toml
+
+[project]
+root = ""   # 留空 = 自动使用项目目录
+timezone_display = "Asia/Shanghai"
+
+[ai]
+enabled = false          # 冒烟测试走规则层兜底，结果必须完全确定
+
+[api_watch]
+interval_minutes = 60
+timeout_ms = 2000
+retries = 0
+rate_limit_ms = 0
+
+[[api_watch.targets]]
+name = "fault_drill"
+url = "http://127.0.0.1:8788/health"
+expect = 200
+note = "自建故障靶子"
+
+[api_watch.thresholds]
+consecutive_failures = 3
+latency_p95_multiple = 3.0
+cold_start_min_samples = 20
+
+[alert]
+primary = "wecom"
+default_cooldown_minutes = 60
+min_cooldown_minutes = 15
+quiet_hours = ""         # 冒烟测试不受静默时段影响
+
+[alert.wecom]
+webhook_env = "OPS_WECOM_WEBHOOK_SMOKE"   # 故意用不存在的变量名 → 走 dry-run 落本地日志
+
+[alert.email]
+enabled = false
+
+[schedule.heartbeat_expect]
+api_watch = 60
+# 故意列一个"从未运行过"的任务：用来验证心跳真的能把"没消息"变成"坏消息"
+regression = 1440

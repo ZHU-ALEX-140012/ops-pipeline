@@ -1,0 +1,245 @@
+# ops-pipeline 配置
+# 唯一需要你修改的文件。凭据一律走环境变量，不写在这里。
+
+[project]
+# 项目根目录。留空 = 自动使用"本配置文件所在目录的上一级"，也就是项目目录。
+# 推荐留空：这样整个项目文件夹可以随便搬到别处（例如桌面）而不用改配置。
+root = ""
+# 仅用于展示层的时间转换；存储一律 UTC
+timezone_display = "Asia/Shanghai"
+
+# ---------------------------------------------------------------- AI 判断层
+[ai]
+enabled = true
+# dsh profile。当前用自带的 headless 模板；后续想给巡检单独配更便宜的模型，
+# 就用：dsh ops --from-default-profile headless   然后改成 "ops"
+profile = "headless"
+# 覆盖层：让 headless 复用桌面端已登录的 DeepSeek 账号，避免单独申请 API Key。
+# 关键——不加这个 patch，headless 会走需要 DEEPSEEK_API_KEY 的 deepseek-official。
+patch = "config/dsh-headless.patch.yml"
+# dsh 启动器（deepseek harness 安装目录下）
+cmd = "D:/AITool/deepseek harness/resources/runtime/cli/bin/dsh.cmd"
+# 是否用 --json 抓事件流（原始 NDJSON 会存到 data/runs/ 供事后分析）
+json_events = true
+# 单次判断的超时（秒）。超时即降级，不阻塞流水线
+timeout_seconds = 240
+# 判断层子进程的 DSH home（profile / 会话 / 存储 / 缓存都落在这里）。
+# 相对路径相对项目根解析；留空同样用默认值 data/dsh-home。
+#
+# 为什么要重定向：headless profile **每次启动都会重写** <DSH_HOME>/profiles/<name>/cordis.yml。
+# 若沿用调用方的真实 ~/.dsh，这个写入就落在工作区之外，在 workspace-write 沙箱里必然被拦，
+# 于是每跑一次判断层都要人工点一次提权 —— 无人值守时更会直接 fail-closed。
+# 指到项目内之后，判断层的所有写入都在工作区内，不再需要任何提权。
+# 账号凭据不在这里：由 config/dsh-headless.patch.yml 单独指回真实 ~/.dsh 读取。
+dsh_home = "data/dsh-home"
+# 每天最多调用次数，超过则转降级模式（成本闸门）
+max_calls_per_day = 30
+# AI 失败时的行为：degrade=规则层兜底并标注"未经 AI 分析" | skip=跳过判断
+on_failure = "degrade"
+
+# 会话策略（D2 决策的落地）：
+#   persistent = 固定会话，判断层有记忆，能跨天对比趋势；
+#   fresh      = 每次新会话，上下文不累积。
+# 日报用固定会话；其余用新会话 —— 每小时一次的独立检查如果共用一个会话，
+# 上下文会无限膨胀，既贵又容易让模型被无关的历史干扰。
+[ai.session_policy]
+daily_report = "persistent"
+api_watch = "fresh"
+regression = "fresh"
+log_scan = "fresh"
+
+# ---------------------------------------------------------------- 4.2 接口巡检
+[api_watch]
+interval_minutes = 60
+timeout_ms = 8000
+retries = 2
+# 目标之间的最小间隔（礼貌调用，别把人家打挂）
+rate_limit_ms = 1200
+# 每次运行是否都要 AI 写报告（false = 只有出现异常才调 AI，省钱）
+always_ai = false
+
+# 监控目标。fault_drill 是自建靶子：用来证明"监控真的能抓到已知故障"
+[[api_watch.targets]]
+name = "frankfurter"
+url = "https://api.frankfurter.app/latest?from=USD&to=CNY"
+expect = 200
+
+[[api_watch.targets]]
+name = "github_rate"
+url = "https://api.github.com/rate_limit"
+expect = 200
+
+[[api_watch.targets]]
+name = "worldtime"
+url = "https://worldtimeapi.org/api/timezone/Asia/Shanghai"
+expect = 200
+
+[[api_watch.targets]]
+name = "fault_drill"
+url = "http://127.0.0.1:8788/health"
+expect = 200
+# 自建故障靶子默认关闭：不启动靶子时它会一直失败，3 轮后变成一条误报。
+# 要做演练时：python tools/fault_drill.py --port 8788，然后把这里改成 true。
+enabled = false
+note = "自建故障靶子，用来证明告警链路真的通"
+
+[api_watch.thresholds]
+# 连续失败几次才告警（抗抖动：一次网络抖动不该打扰你）
+consecutive_failures = 3
+# "连续失败"只统计这个时间窗口内的样本。
+# 不设窗口会让 consecutive_failures 与 failures_24h 自相矛盾（真实踩过这个坑：
+# 昨天 17:05 的失败被算进今天的"连续失败"，AI 判断层一眼就指出了不一致）。
+streak_max_age_hours = 24
+# 延迟超过基线 p95 的几倍算异常
+latency_p95_multiple = 3.0
+# 基线样本少于这个数时处于冷启动期，改用绝对阈值
+cold_start_min_samples = 20
+
+# ---------------------------------------------------------------- 4.1 接口回归
+[regression]
+# 测谁？留空 base_url 就用内置靶子（演示/自测用）；填上你自己的服务地址就测它。
+# 例如：base_url = "http://127.0.0.1:8000"
+base_url = ""
+
+# 内置靶子：variant = "v1" 全部通过；"v2" 注入 3 类真实回归：
+#   1) 字段改名 name → full_name
+#   2) 金额类型 数字 → 字符串
+#   3) 查不存在的商品 404 → 200 + null
+# 默认 v1：默认配置必须开箱即用，不能一装上就天天误报。
+# 想演示"回归抓得到故障"时用： --override regression.variant=v2
+service = "targets/service.py"
+cases_module = "targets.cases"
+variant = "v1"
+port = 8799
+startup_timeout_s = 20
+timeout_ms = 5000
+# 每天是否无条件调用 AI 写晨报（false = 只有失败时才调，省钱）
+always_ai = false
+
+# ---------------------------------------------------------------- 告警
+# ---------------------------------------------------------------- 2.4 日志异常分析
+[log_scan]
+# 每天是否无条件调用 AI（false = 只有发现异常时才调，省钱）
+always_ai = false
+# 模板提取（Drain）参数
+drain_depth = 4
+drain_similarity = 0.5
+
+[log_scan.thresholds]
+# 当前窗口与基线窗口各自的长度（小时）。两个窗口紧邻，所以需要 2×window_hours 的日志。
+window_hours = 24
+# 新错误模板至少出现几次才告警（1 次可能只是抖动）
+new_error_min_count = 3
+# 首次出现后多少天内仍按"新模板"对待。
+# 不设宽限期的话，第二轮它就成了老模板 —— 万一首轮告警被静默/冷却抑制，你就永远收不到通知。
+new_template_grace_days = 3
+# 量级突增：超过基线的几倍，且绝对次数不低于 spike_min_count
+spike_multiple = 5.0
+spike_min_count = 20
+# 基线窗口少于这么多行就算冷启动：只报告，不做量级判定
+min_baseline_lines = 100
+# 最新日志距今超过这么多小时 → 判定"日志停止写入"
+stale_after_hours = 3
+# 能解析出时间戳的行占比低于此值 → 提示日志格式可能变了
+parse_ratio_floor = 0.5
+# 报告里最多列多少个模板
+top_templates = 15
+# 用于量级判定的历史窗口数
+history_windows = 7
+
+# 日志源。path 支持通配符（例如 "data/logs/*.log"）。
+# 换成你自己的日志时，只要改这里；格式支持常见的
+# "YYYY-MM-DD HH:MM:SS(.mmm) LEVEL ..." 与 ISO8601（带 Z 或 +08:00）。
+[[log_scan.sources]]
+name = "app"
+path = "data/logs/app.log"
+max_lines = 200000
+
+[alert]
+# 主通道。可选：email / ntfy / pushplus / wecom（群机器人）/ wecom_app（自建应用）
+#
+# 为什么最终是 email —— 把每条路都实测过之后的结论：
+#   * 企业微信 · 群机器人：需要普通内部群；「全员群」+ 单人企业拿不到入口，
+#     拉个人微信会变成「外部群」，一样不支持；
+#   * 企业微信 · 自建应用：要先配「可信域名」或「接收消息服务器URL」才能填企业可信IP，
+#     前者需已备案域名，后者需公网服务器 —— 个人环境都不具备；
+#   * ntfy：服务可达（实测 2.1s），但国内安卓应用商店不让装这个 App；
+#   * pushplus：实测返回 code=905「账户未进行实名认证」，而实名要付费（¥3.9 或 ¥10）。
+# email 是唯一没有任何前置门槛的：不要实名、不要付费、不经第三方、没有额度上限。
+primary = "email"
+# 主通道没成功时按顺序再试。dry-run（没配）不算失败，failed 才算。
+fallback = ["ntfy", "wecom"]
+
+default_cooldown_minutes = 60
+# 静默时段（除 critical 外不发）。留空字符串则关闭
+quiet_hours = "23:30-07:30"
+
+# PushPlus：微信扫码登录拿 token，消息推到微信，无需装 App。
+# 怎么配：
+#   1) 手机或电脑浏览器打开 https://www.pushplus.plus/
+#   2) 用微信扫码登录
+#   3) 首页会显示你的 token（一串 32 位字符），复制它
+#   4) scripts\set-secret.cmd -Name OPS_PUSHPLUS_TOKEN -Masked
+# 免费版每天约 200 条，个人告警足够。
+# ⚠️ token 就是凭据，别外传。
+[alert.pushplus]
+token_env = "OPS_PUSHPLUS_TOKEN"
+template = "markdown"
+
+# ntfy：服务可达，但国内安卓应用商店不让装这个 App（提示"仅支持出境用户安装"）。
+# 如果你能侧载 APK，或想在浏览器里收，就可以用它。
+# 配法见 README；话题名要随机（公共服务器上话题是公开的）。
+[alert.ntfy]
+url_env = "OPS_NTFY_URL"
+title = "ops-pipeline"
+priority = "default"
+tags = "warning"
+
+[alert.wecom]
+# 群机器人：需要普通内部群（普通群 ≥2 名企业成员才建得出来）。
+# 值只从环境变量或 secrets.local.toml 读，绝不写进仓库。
+webhook_env = "OPS_WECOM_WEBHOOK"
+
+# 企业微信自建应用（单人企业也能用）。
+# 三个值从哪拿：
+#   CorpID  —— 管理后台 → 我的企业 → 企业信息 → 最下方「企业ID」
+#   AgentId —— 管理后台 → 应用管理 → 自建 → 创建应用 → 建好后在应用详情页
+#   Secret  —— 同上，点「查看」并发送到企业微信里查看
+# ⚠️ 别忘了把该应用的**可见范围**设成包含你自己，否则会返回 invaliduser。
+# 三个值都写进 config/secrets.local.toml；用 scripts\set-wecom-app.cmd 最省事。
+[alert.wecom_app]
+corpid_env = "OPS_WECOM_CORPID"
+secret_env = "OPS_WECOM_SECRET"
+agentid_env = "OPS_WECOM_AGENTID"
+# 发给谁：@all = 该应用可见范围内的所有人（也就是你自己）
+touser = "@all"
+
+[alert.email]
+# 主通道。配法见 README「配置邮件告警」；凭据同样只从环境变量或 secrets.local.toml 读。
+enabled = true
+smtp_host = "smtp.qq.com"
+smtp_port = 465
+user_env = "OPS_MAIL_USER"
+pass_env = "OPS_MAIL_PASS"
+to_env = "OPS_MAIL_TO"
+
+# ---------------------------------------------------------------- 每日日报
+# 设计方案 §12 的「报告统一入口」：不管有没有异常都发一份，
+# 让"今天一切正常"也成为一条明确信息（而不是靠沉默去推断）。
+[daily_report]
+# 统计窗口（小时）。日报在窗口结束时刻生成，汇总窗口内的运行与告警。
+window_hours = 24
+
+# ---------------------------------------------------------------- 心跳
+# 每个任务"应该多久跑一次"（分钟）。心跳任务据此判断有没有静默失败。
+# 只列**实际注册了计划任务**的项：声明了却没注册，心跳会一直报"从未运行过"。
+[schedule.heartbeat_expect]
+api_watch = 60
+regression = 1440
+daily_report = 1440
+heartbeat = 1440
+# log_scan 默认不注册（register_tasks.ps1 需要显式加 -IncludeLogScan），
+# 因为它的日志源默认还指向演示用的合成日志。
+# 把它指向你自己的日志、加 -IncludeLogScan 注册之后，把下面这行也加回来，
+# 否则心跳不会检查"日志分析有没有按预期运行"。
+# log_scan = 1440
