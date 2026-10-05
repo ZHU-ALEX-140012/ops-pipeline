@@ -108,6 +108,44 @@ def parse_events(text: str) -> tuple[str | None, RunUsage]:
     return session_id, usage
 
 
+def parse_tool_calls(text: str, needle: str = "tools/investigate.py") -> dict[str, Any]:
+    """从事件流里统计判断层调了哪些工具。
+
+    **这是宿主侧的权威计数，不需要任何写入** —— 所以它在"子进程沙箱只能读、
+    状态文件写不进去"的环境里照样准确。实测就是这种环境：CLI 自己的计数器
+    落不了盘（而且第一版还把写入异常静默吞了），但工具**确实被调用了 7 次**。
+
+    于是预算的两个角色被分开：
+      * **强制**：CLI 在状态目录可写时硬拦（超了返回退出码 2）；
+      * **检测**：宿主侧从事件流数 —— 即使拦不住，也一定看得见超了。
+    把"拦得住"和"看得见"混为一谈，是这类护栏最常见的自欺。
+    """
+    calls: list[dict[str, Any]] = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(event, dict) or event.get("type") != "tool_call":
+            continue
+        payload = event.get("input")
+        command = str(payload.get("command") or "") if isinstance(payload, dict) else ""
+        calls.append({
+            "tool": str(event.get("tool") or ""),
+            "command": command,
+            "is_investigate": needle in command,
+        })
+    investigate_calls = [c for c in calls if c["is_investigate"]]
+    return {
+        "total": len(calls),
+        "investigate": len(investigate_calls),
+        "commands": [c["command"][:120] for c in investigate_calls],
+    }
+
+
 @dataclass
 class AIResult:
     ok: bool
@@ -122,6 +160,7 @@ class AIResult:
     events_path: Path | None = None
     ai_report_path: Path | None = None
     usage: RunUsage = field(default_factory=RunUsage)
+    tool_calls: dict[str, Any] = field(default_factory=dict)
     extra: dict[str, Any] = field(default_factory=dict)
 
 
@@ -188,7 +227,7 @@ class AIBridge:
 
     # -------------------------------------------------------------- 子进程环境
 
-    def _child_env(self) -> dict[str, str]:
+    def _child_env(self, run_id: str | None = None) -> dict[str, str]:
         """给判断层子进程一套干净的环境变量。
 
         继承调用方的 `DSH_*` 会把编排层自己的 home / profile / 会话 id 带进判断层：
@@ -198,9 +237,14 @@ class AIBridge:
         这些 `DSH_*` 本来就是 DSH 注入给模型 shell 工具的"事实"
         （见 `@deepseek-ai/dsh-shell-env`：ambient 值会被 executor 丢弃后重新注入），
         不是 boot 的输入，所以这里整体剔除，只留下我们指定的 `DSH_HOME`。
+
+        另外注入 `OPS_INVESTIGATE_RUN_ID`：判断层调调查工具时要靠它把"这一轮"
+        的调用次数分开计。没有它，预算就变成全机器共享，等于没有预算。
         """
         env = {k: v for k, v in os.environ.items() if not k.upper().startswith("DSH_")}
         env["DSH_HOME"] = str(self.dsh_home)
+        if run_id:
+            env["OPS_INVESTIGATE_RUN_ID"] = run_id
         return env
 
     # -------------------------------------------------------------- session
@@ -274,14 +318,14 @@ class AIBridge:
 
         session_id = self.load_session(task) if use_session else None
         started = time.perf_counter()
-        result = self._run_once(prompt, session_id)
+        result = self._run_once(prompt, session_id, run_id)
         duration = time.perf_counter() - started
 
         # 会话可能已失效：清掉并用新会话重试一次（只重试一次，避免打转）
         if session_id and result["returncode"] != 0 and _looks_like_bad_session(result["stderr"]):
             self.store_session(task, None)
             started = time.perf_counter()
-            result = self._run_once(prompt, None)
+            result = self._run_once(prompt, None, run_id)
             duration = time.perf_counter() - started
             result["note"] = "会话失效，已回退到新会话"
 
@@ -303,8 +347,10 @@ class AIBridge:
         # 拿不到（例如没开 --json）才退回正则。
         usage = RunUsage()
         new_session = session_id
+        tool_calls: dict[str, Any] = {}
         if events_path is not None:
             parsed_session, usage = parse_events(result["stdout"])
+            tool_calls = parse_tool_calls(result["stdout"])
             if parsed_session:
                 new_session = parsed_session
         if new_session is None:
@@ -344,10 +390,12 @@ class AIBridge:
             events_path=events_path,
             ai_report_path=report_out if report_out.is_file() else None,
             usage=usage,
+            tool_calls=tool_calls,
             extra={"returncode": result["returncode"], "note": result.get("note")},
         )
 
-    def _run_once(self, prompt: str, session_id: str | None) -> dict[str, Any]:
+    def _run_once(self, prompt: str, session_id: str | None,
+                  run_id: str | None = None) -> dict[str, Any]:
         argv = self._argv(session_id)
         # Windows 上 .cmd 必须通过 cmd.exe 执行，否则 CreateProcess 会失败
         if argv[0].lower().endswith((".cmd", ".bat")):
@@ -359,7 +407,7 @@ class AIBridge:
                 capture_output=True,
                 timeout=self.timeout_s,
                 cwd=str(cfgmod.project_root(self.cfg)),
-                env=self._child_env(),
+                env=self._child_env(run_id),
             )
             return {
                 "returncode": proc.returncode,

@@ -320,9 +320,10 @@ ops-pipeline/
 │  ├─ fault_drill.py      接口故障靶子
 │  ├─ loggen.py           合成日志生成器（可注入新错误模板 / 量级暴涨）
 │  ├─ eval_suite.py       判断层评测：指标 / 对比 / 报告
+│  ├─ investigate.py      只读调查工具 CLI（判断层用 shell 调用它）
 │  └─ notify_test.py      告警通道测试（配好通道后先点一炮）
 ├─ scripts/               计划任务注册、通用凭据录入、启动包装
-└─ tests/                 255 个单元测试
+└─ tests/                 304 个单元测试
 ```
 
 ---
@@ -457,11 +458,91 @@ python tools/eval_suite.py --compare       # 与上次对比 → 回归检测
 
 **知道并写出自己评测的局限，比报一个漂亮的分数更接近工程。**
 
+## 判断层可以主动查证（只读调查工具）
+
+判断层不只是"读一段 JSON 然后回答"——它还能**主动去查证**。四个工具：
+
+| 工具 | 能碰什么 | 边界控制 |
+|---|---|---|
+| `read_log` | 按 `[[log_scan.sources]]` 里的**名字**读日志尾部 | 不接受路径 → 没有路径穿越；有界读（实测 11MB 日志 0.02 秒）；输出截断 |
+| `query_history` | 以**只读**方式查历史运行与告警 | `mode=ro`，不可用则退到 `PRAGMA query_only`（写入同样被 SQLite 拒绝） |
+| `probe_target` | 按 `[[api_watch.targets]]` 里的**名字**重新探测 | 不接受 URL/主机名 → 不能拿这台机器当跳板扫内网 |
+| `read_report` | 读 `data/reports` 下某次运行的报告 | 校验 run_id 形状 + 路径必须落在报告目录内 |
+
+```bash
+python tools/investigate.py catalog          # 看允许访问什么、还剩几次预算
+python tools/investigate.py read-log --source app --tail 300 --pattern "ERROR"
+python tools/investigate.py history  --task api_watch --days 7
+python tools/investigate.py probe    --target worldtime
+python tools/investigate.py report   --run-id <run_id>
+```
+
+**为什么是"白名单 + 只读"，而不是"给它文件系统权限"**：判断层本来就有
+`fs` / `fs-search` / `pwsh` / `web` 工具（`dsh --profile headless --dump-config` 里能看到），
+提示词里写的"不要读日志文件"**只是建议，不是安全边界**。
+这组工具的价值不在于加权限，而在于**把读操作收窄到配置里已声明过的对象上**，
+并且每次运行有预算、每次都留审计痕迹。它们是纯读的，
+所以判断层即使被提示注入操纵也改不了任何东西 —— 而它自带的 `pwsh` 可以。
+
+### 实测：一次真实的七步调查
+
+给判断层这批工具后，它在一次真实巡检里自己走完了这条链：
+
+```
+catalog                                   → 拿到允许访问的对象
+history --task api_watch --days 7         → 查这个目标过去有没有成功过
+probe --target worldtime                  → 立刻重探，确认"现在仍然失败"
+read-log --pattern "worldtime|URLError"   → 去日志里找对应报错
+report --run-id <历史 run>                → 读上次同类问题的结论
+write verdict → 自己用 shell 校验 JSON → 发现格式错 → edit 修好 → 复验
+```
+
+**最后那步尤其说明问题**：它自己写了 JSON、自己校验、发现不合法、自己修好、再验一次 ——
+这不是"一次问答"，而是一个带反馈闭环的循环。
+
+### MCP 服务端：实现了，但今天挂不上去（诚实说明）
+
+`ops/investigate/mcp.py` 是一个**纯标准库手写的 MCP 服务端**（JSON-RPC 2.0 over stdio，
+实现 `initialize` / `tools/list` / `tools/call` / `ping` / 通知），协议完整性由
+一个真的 stdio 测试客户端验证。它和 CLI **共用 `ops/investigate/tools.py` 这一份实现**，
+不存在两条通道各自演化的问题。
+
+**但 `dsh headless` 的 profile 里没有 MCP 客户端的配置面** ——
+我用 `dsh --profile headless --dump-config` 逐项查过，只有一个
+`dsh-mcp-resources`（MCP *资源*，不是服务器连接）。MCP 服务器是通过 ACP 的
+`session/new` 由**客户端**传 `mcpServers` 挂上的（asar 里能看到
+`SessionBuilder.withMcpServer`），而 `dsh headless` 自己就是那个客户端，命令行没暴露这个入口。
+
+所以现状是：**MCP 服务端可用、可测试、可被任何 MCP 客户端使用；
+流水线今天实际走的是同源的 CLI。** 两者边界控制完全一致。
+
+### 预算：把"拦得住"和"看得见"分开
+
+工具调用预算是 **6 次/运行**。但这里有一个实测出来的重要区分：
+
+| 角色 | 谁来做 | 在什么环境下有效 |
+|---|---|---|
+| **强制**（拦住第 7 次） | CLI 写状态计数器 | 需要状态目录**可写** |
+| **检测**（看得见超了） | 宿主侧从 `events.ndjson` 数 `tool_call` | **任何环境都有效**，不需要写入 |
+
+为什么必须分开：实测环境里**判断层的沙箱 shell 只能读、状态文件写不进去**
+（`SetNamedSecurityInfoW ... grantWrite(D:\AITool\ops-pipeline)`），
+于是 CLI 的计数器落不了盘。第一版还把写入异常 `except OSError: pass` 吞掉了，
+结果判断层连调 5 次工具、每次预算行都显示"已用 0/6" —— **硬上限形同虚设，而日志里毫无提示**。
+
+现在三件事都做了：
+
+1. 写入失败**显式报告**（stderr 明说"本轮工具预算未生效"）；
+2. `catalog` 自带**落盘自检**，直接告诉你计数能不能写、当前运行标识是什么；
+3. 宿主侧从事件流**独立计数**并写进报告附注 —— 即使拦不住也一定看得见。
+
+> **"拦得住"和"看得见"混为一谈，是这类护栏最常见的自欺。**
+
 ## 验证状态
 
 **已实测：**
 
-- **255 个单元测试**全绿：分位数、模态、异常判定、冷启动、静默时段（含跨午夜）、
+- **304 个单元测试**全绿：分位数、模态、异常判定、冷启动、静默时段（含跨午夜）、
   决策抑制、规则兜底、存储幂等、冷却、dry-run 语义、连续失败时间窗口、断言 DSL 双侧覆盖、
   日志模板提取、窗口切分、静默失败防护、基线污染防护、`--override` 路径校验、
   企业微信 `errcode` 校验、密钥文件与 BOM 容错、控制台编码健壮性、

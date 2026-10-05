@@ -120,6 +120,82 @@ class TestValidateVerdict(unittest.TestCase):
         self.assertTrue(aibridge.validate_verdict(["nope"], "r1"))
 
 
+class TestChildEnv(unittest.TestCase):
+    """子进程环境：既要隔离，也要把"这一轮"的标识传下去。"""
+
+    def _env(self, run_id=None):
+        bridge = aibridge.AIBridge.__new__(aibridge.AIBridge)
+        bridge.cfg = {"project": {"root": "."}, "ai": {"dsh_home": "data/dsh-home"}}
+        bridge.dsh_home = Path("data/dsh-home")
+        return bridge._child_env(run_id)
+
+    def test_strips_inherited_dsh_vars(self):
+        import os
+
+        os.environ["DSH_SOMETHING"] = "leak"
+        try:
+            env = self._env()
+        finally:
+            os.environ.pop("DSH_SOMETHING", None)
+        self.assertNotIn("DSH_SOMETHING", env)
+        self.assertIn("DSH_HOME", env)
+
+    def test_injects_run_id_for_tool_budget(self):
+        """没有这个变量，判断层的工具预算就变成全机器共享 —— 等于没有预算。"""
+        self.assertEqual(self._env("run-abc")["OPS_INVESTIGATE_RUN_ID"], "run-abc")
+
+    def test_no_run_id_leaves_variable_absent(self):
+        self.assertNotIn("OPS_INVESTIGATE_RUN_ID", self._env())
+
+
+class TestParseToolCalls(unittest.TestCase):
+    """宿主侧的工具调用计数 —— 唯一在任何环境下都准的口径。
+
+    实测环境里判断层的沙箱 shell 只能读、状态文件写不进去，
+    于是 CLI 自己的计数器落不了盘（第一版还把异常静默吞了），
+    但事件流里明明白白记着 7 次调用。**拦不住 ≠ 看不见。**
+    """
+
+    def _events(self, *commands):
+        import json
+
+        lines = []
+        for cmd in commands:
+            lines.append(json.dumps({"type": "tool_call", "tool": "pwsh",
+                                     "input": {"command": cmd}}))
+            lines.append(json.dumps({"type": "tool_result", "status": "completed",
+                                     "result": "ok"}))
+        return "\n".join(lines)
+
+    def test_counts_only_investigate_commands(self):
+        text = self._events(
+            "python tools/investigate.py catalog",
+            "echo hello",
+            "python tools/investigate.py probe --target worldtime",
+        )
+        result = aibridge.parse_tool_calls(text)
+        self.assertEqual(result["total"], 3)
+        self.assertEqual(result["investigate"], 2)
+        self.assertEqual(len(result["commands"]), 2)
+
+    def test_no_tool_calls_is_zero(self):
+        result = aibridge.parse_tool_calls('{"type":"final","text":"done"}')
+        self.assertEqual(result["investigate"], 0)
+        self.assertEqual(result["commands"], [])
+
+    def test_malformed_lines_ignored(self):
+        text = "不是 JSON\n" + self._events("python tools/investigate.py catalog")
+        self.assertEqual(aibridge.parse_tool_calls(text)["investigate"], 1)
+
+    def test_real_event_shape_without_command(self):
+        """有些工具（比如 glob）没有 command 字段，不能因此崩掉。"""
+        import json
+
+        text = json.dumps({"type": "tool_call", "tool": "glob",
+                           "input": {"pattern": "data/runs/*"}})
+        self.assertEqual(aibridge.parse_tool_calls(text)["total"], 1)
+
+
 class TestDiagnose(unittest.TestCase):
     def test_missing_credential_hint(self):
         hint = aibridge.diagnose("MISSING_CREDENTIAL: llm-deepseek: no API key")

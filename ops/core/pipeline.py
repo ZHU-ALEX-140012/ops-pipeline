@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from . import aibridge, config as cfgmod, http, judge, notify, report, store
+from ..investigate import tools as investigate
 
 PROMPT_DIR = Path(__file__).resolve().parents[1] / "prompts"
 
@@ -95,6 +96,10 @@ def finalize(
             ai_notes.append(f"今日 AI 调用已达上限 {max_calls}，本轮降级为规则判定")
         else:
             bridge = aibridge.AIBridge(cfg)
+            # 把"能用什么只读工具、能碰哪些对象、还剩几次预算"附在输入里。
+            # 放在这里（生产路径）而不是桥接层：评测用的是冻结夹具，
+            # 注入活的配置/数据库内容会让评测不再可复现。
+            run_doc = {**run_doc, "investigation": investigate.tool_context(cfg, run_id)}
             result = bridge.call(
                 task=task,
                 run_id=run_id,
@@ -115,9 +120,21 @@ def finalize(
                 if usage.session_total_tokens:
                     ai_notes.append(
                         f"token：输入 {usage.input_tokens}"
-                        f"（cache 读 {usage.cache_read_tokens} / 写 {usage.cache_write_tokens}）"
+                        f"（cache 读 {usage.cache_read_tokens}"
+                        f" / 写 {usage.cache_write_tokens}）"
                         f"，输出 {usage.output_tokens}，会话累计 {usage.session_total_tokens}"
                     )
+                # 宿主侧的工具调用计数：不依赖子进程写状态文件，所以任何环境下都准
+                used_tools = int((result.tool_calls or {}).get("investigate") or 0)
+                if used_tools:
+                    limit = int((cfg.get("investigate") or {}).get("max_calls_per_run", 6))
+                    note = f"判断层调用了 {used_tools} 次只读调查工具"
+                    if used_tools > limit:
+                        note += (
+                            f" —— **超过预算 {limit}**：说明子进程沙箱写不进状态文件，"
+                            f"CLI 的硬拦未生效；此数来自宿主侧事件流统计"
+                        )
+                    ai_notes.append(note)
             else:
                 ai_status = "failed"
                 ai_error = result.error or "未知原因"

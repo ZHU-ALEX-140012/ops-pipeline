@@ -37,6 +37,32 @@ max_calls_per_day = 30
 # AI 失败时的行为：degrade=规则层兜底并标注"未经 AI 分析" | skip=跳过判断
 on_failure = "degrade"
 
+# ---------------------------------------------------------------- 只读调查工具
+#
+# 给判断层一组收窄到最小的调查动作，每个动作只能碰**配置里已声明过的对象**：
+#   read_log       按 [[log_scan.sources]] 的名字读日志（不接受路径，所以没有路径穿越）
+#   query_history  以只读方式查历史运行与告警
+#   probe_target   按 [[api_watch.targets]] 的名字重新探测
+#   read_report    读 data/reports 下某次运行的报告
+#
+# 为什么必须收窄：判断层自带 fs / fs-search / pwsh / web 工具（见 dsh --dump-config），
+# 提示词里写的"不要读日志文件"**只是建议，不是安全边界**。
+# 这组工具的价值不在于"给权限"，而在于**把读操作限定到已知对象上**，
+# 并且每次运行有硬预算、每次都留审计痕迹。
+#
+# 今天实际生效的是 CLI（tools/investigate.py，判断层用它已有的 pwsh 调用）；
+# MCP 服务端（ops/investigate/mcp.py）协议完整，但 dsh headless 的 profile
+# 没有 MCP 客户端的配置面，挂不上去 —— 详见 README。
+[investigate]
+enabled = true
+# 每次运行最多调用几次工具。超过就把"预算用尽"作为工具结果返回，
+# 让模型用已有信息作结论 —— 降级，不是失败。
+max_calls_per_run = 6
+# 单次工具输出上限（字节）。工具输出会直接进上下文，不设上限等于不设成本上限。
+max_output_bytes = 6000
+# probe 工具的重试次数。探测本身很快，重试主要为了排除偶发抖动
+probe_retries = 0
+
 # 会话策略（D2 决策的落地）：
 #   persistent = 固定会话，判断层有记忆，能跨天对比趋势；
 #   fresh      = 每次新会话，上下文不累积。
