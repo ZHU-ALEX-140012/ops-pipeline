@@ -19,13 +19,14 @@ from typing import Any
 
 from .core import config as cfgmod
 from .core import make_console_safe
-from .tasks import api_watch, daily_report, heartbeat, log_scan, regression
+from .tasks import api_watch, daily_report, feedback_scan, heartbeat, log_scan, regression
 
 TASKS: dict[str, Any] = {
     "api_watch": api_watch.run,
     "regression": regression.run,
     "log_scan": log_scan.run,
     "daily_report": daily_report.run,
+    "feedback_scan": feedback_scan.run,
     "heartbeat": heartbeat.run,
 }
 
@@ -52,6 +53,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="临时覆盖配置项，可重复。例：--override regression.variant=v1",
     )
     parser.add_argument("--list", action="store_true", help="列出可用任务")
+    parser.add_argument("--doctor", action="store_true",
+                        help="自检：配置 / 凭据 / 连通性 / 存储 / 判断层 / 计划任务")
+    parser.add_argument("--doctor-offline", action="store_true",
+                        help="自检时跳过网络探测（快速模式）")
     return parser
 
 
@@ -61,6 +66,19 @@ def main(argv: list[str] | None = None) -> int:
     make_console_safe()
     parser = build_parser()
     args = parser.parse_args(argv)
+
+    if args.doctor:
+        from .core import doctor
+
+        try:
+            cfg = cfgmod.load_config(args.config)
+        except cfgmod.ConfigError as exc:
+            print(f"配置错误：{exc}", file=sys.stderr)
+            return 2
+        checks = doctor.run_doctor(cfg, offline=args.doctor_offline)
+        print(doctor.render(checks))
+        # 有 FAIL 就返回非零 —— 自检要能被脚本/计划任务消费
+        return 1 if doctor.summarize(checks)[doctor.FAIL] else 0
 
     if args.list or not args.task:
         print("可用任务：")

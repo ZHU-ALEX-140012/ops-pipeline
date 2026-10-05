@@ -270,6 +270,119 @@ class TestCompare(unittest.TestCase):
         self.assertIn("+10.0 pp", text)
 
 
+class TestPairedArms(unittest.TestCase):
+    """配对比较：同一批夹具、同一次运行里跑「无工具」和「有工具」。
+
+    这里锁的是**对比的公平性** —— 两边子集不同、重复次数不同，
+    差值就是假的，而假的差值比没有差值更糟。
+    """
+
+    def _scenario(self, name, *, predicted, expected, skipped=False, tool_calls=0):
+        def arm(ok):
+            return {"skipped": False, "tool_calls": tool_calls, "stable": True, "pass_count": 1,
+                    "repeat": 1,
+                    "runs": [{"predicted": predicted, "expected": expected, "ok": True,
+                              "alert_ok": ok, "severity_ok": True, "root_ok": True}],
+                    "score": {"predicted": predicted, "expected": expected, "ok": True,
+                              "alert_ok": ok, "severity_ok": True, "root_ok": True}}
+
+        return {
+            "name": name, "task": "api_watch", "note": "n",
+            "expect": {"should_alert": expected},
+            "rule": {"score": {"predicted": expected, "expected": expected, "ok": True,
+                               "alert_ok": True, "severity_ok": True, "root_ok": True}},
+            "ai": ({"skipped": True, "runs": [], "tool_calls": 0,
+                    "score": {"predicted": None, "expected": expected, "ok": False,
+                              "alert_ok": False, "severity_ok": None, "root_ok": None}}
+                   if skipped else arm(predicted == expected)),
+            "ai_tools": None if skipped else arm(predicted == expected),
+        }
+
+    def test_skipped_scenarios_excluded_from_arm(self):
+        scenarios = [self._scenario("a", predicted=True, expected=True),
+                     self._scenario("b", predicted=False, expected=True, skipped=True)]
+        metrics = eval_suite.arm_metrics(
+            scenarios, "ai", 1, {"in": 0, "out": 0, "cache_read": 0, "cache_write": 0}, [])
+        self.assertEqual(metrics["n"], 1)
+
+    def test_rule_subset_matches_ai_subset(self):
+        """对照臂必须落在同一子集上 —— 否则两边 n 不同，差值没有意义。"""
+        scenarios = [self._scenario("a", predicted=True, expected=True),
+                     self._scenario("b", predicted=False, expected=True, skipped=True)]
+        self.assertEqual(eval_suite.rule_subset(scenarios, "ai", 1)["n"], 1)
+
+    def test_rule_subset_replicates_for_repeat(self):
+        """规则层是确定性的，重复 N 次等价于复制 N 份 —— 这样两边 n 才相等。"""
+        scenarios = [self._scenario("a", predicted=True, expected=True)]
+        self.assertEqual(eval_suite.rule_subset(scenarios, "ai", 3)["n"], 3)
+
+    def test_tool_calls_aggregated(self):
+        scenarios = [self._scenario("a", predicted=True, expected=True, tool_calls=4),
+                     self._scenario("b", predicted=True, expected=True, tool_calls=0)]
+        metrics = eval_suite.arm_metrics(
+            scenarios, "ai_tools", 1, {"in": 0, "out": 0, "cache_read": 0, "cache_write": 0}, [])
+        self.assertEqual(metrics["tool_calls"], 4)
+        self.assertEqual(metrics["scenarios_with_tools"], 1)
+
+
+class TestPairedReport(unittest.TestCase):
+    def _run(self, *, with_tools: bool) -> dict:
+        def arm(ok: bool, tools: int = 0, duration: float = 12.3):
+            return {"skipped": False, "tool_calls": tools, "stable": True, "pass_count": 1,
+                    "repeat": 1,
+                    "tokens": {"in": 10, "out": 5, "cache_read": 0, "cache_write": 0},
+                    "avg_duration_s": duration,
+                    "score": {"predicted": True, "expected": True, "ok": True,
+                              "alert_ok": ok, "severity_ok": True, "root_ok": True}}
+
+        def base(n: int, precision: float):
+            return {"n": n, "alert": {"precision": precision, "recall": 1.0, "f1": 0.8,
+                                      "accuracy": 0.8, "tp": 1, "fp": 1, "fn": 0, "tn": 0},
+                    "severity_accuracy": 1.0, "severity_n": n,
+                    "root_accuracy": 0.5, "root_n": n, "errors": 0}
+
+        ai = dict(base(1, 1.0), tokens={"in": 10, "out": 5, "cache_read": 0, "cache_write": 0},
+                  avg_duration_s=12.3, tool_calls=0, scenarios_with_tools=0,
+                  stability={"repeat": 1, "scenarios": 1, "unstable_count": 0, "unstable": []})
+        metrics = {"rule": base(1, 0.5), "rule_subset": base(1, 0.5), "ai": ai, "ai_tools": None}
+        if with_tools:
+            metrics["ai_tools"] = dict(
+                ai, tool_calls=3, scenarios_with_tools=1, avg_duration_s=45.6,
+                tokens={"in": 40, "out": 20, "cache_read": 100, "cache_write": 0})
+        return {
+            "started_at": "T", "mode": "paired" if with_tools else "ai", "suite": "golden",
+            "repeat": 1,
+            "scenarios": [{
+                "name": "s1", "task": "api_watch", "note": "note",
+                "expect": {"should_alert": True},
+                "rule": {"score": {"predicted": True, "expected": True, "ok": True,
+                                   "alert_ok": True, "severity_ok": True, "root_ok": True}},
+                "ai": arm(True),
+                "ai_tools": arm(True, 3, 45.6) if with_tools else None,
+            }],
+            "metrics": metrics,
+        }
+
+    def test_two_column_report_without_tools(self):
+        text = eval_suite.render_markdown(self._run(with_tools=False))
+        self.assertNotIn("AI + 只读工具", text)
+
+    def test_three_column_report_with_tools(self):
+        text = eval_suite.render_markdown(self._run(with_tools=True))
+        self.assertIn("AI + 只读工具", text)
+        self.assertIn("有工具 − 无工具", text)
+
+    def test_report_states_the_fairness_caveat(self):
+        """有工具臂不是 hermetic 的 —— 报告必须自己说出来，否则对比是误导。"""
+        text = eval_suite.render_markdown(self._run(with_tools=True))
+        self.assertIn("不是完全 hermetic", text)
+        self.assertIn("investigation", text)
+
+    def test_tool_usage_shown_in_cost_section(self):
+        self.assertIn("共触发 3 次工具调用",
+                      eval_suite.render_markdown(self._run(with_tools=True)))
+
+
 class TestReportRendering(unittest.TestCase):
     def test_console_output_is_ascii_only(self):
         """控制台输出必须纯 ASCII —— 中文 Windows 控制台是 GBK，会乱码，

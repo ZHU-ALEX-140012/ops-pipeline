@@ -39,7 +39,8 @@ param(
     [switch]$RunWhenLoggedOff,
     [switch]$Remove,
     [switch]$DryRun,
-    [switch]$IncludeLogScan
+    [switch]$IncludeLogScan,
+    [switch]$IncludeFeedbackScan
 )
 
 $ErrorActionPreference = 'Stop'
@@ -51,6 +52,7 @@ $hbTaskName  = 'OpsPipeline-Heartbeat'
 $regTaskName = 'OpsPipeline-Regression'
 $logTaskName = 'OpsPipeline-LogScan'
 $dlyTaskName = 'OpsPipeline-DailyReport'
+$fbTaskName  = 'OpsPipeline-FeedbackScan'
 
 # 默认注册四个任务：接口巡检、回归、日报、心跳。它们的输入都在项目内，装好就能跑。
 #
@@ -59,10 +61,15 @@ $dlyTaskName = 'OpsPipeline-DailyReport'
 # 真注册了它，日志一停止增长就会持续报"日志停止写入"——对演示文件而言那是误导性告警。
 # 把它指向自己的真实日志后，用 -IncludeLogScan 一并注册。
 #
+# feedback_scan 为什么默认不注册：它会**读取你的收件箱**。
+# 现在只会把"成功认领的回信"标记已读（第一版会把全部未读标成已读，已修并有单测），
+# 但"让一个程序定时读我的邮箱"应该是一个显式选择 —— 想用就加 -IncludeFeedbackScan。
+#
 # 日报默认注册：它汇总"已经注册的那些任务"的运行情况，
 # 不管有没有异常都发一份，让"今天一切正常"也成为明确信息。
 $taskNames = @($apiTaskName, $hbTaskName, $regTaskName, $dlyTaskName)
 if ($IncludeLogScan) { $taskNames += $logTaskName }
+if ($IncludeFeedbackScan) { $taskNames += $fbTaskName }
 
 function Write-Step($text) { Write-Host "==> $text" -ForegroundColor Cyan }
 function Invoke-Or-Show([scriptblock]$action, [string]$description) {
@@ -164,6 +171,16 @@ if ($DryRun) {
         Write-Host "        log_scan 默认不注册：它监视的日志源还是演示用的合成日志。" -ForegroundColor DarkGray
         Write-Host "        把它指向你自己的日志后，加 -IncludeLogScan 一并注册。" -ForegroundColor DarkGray
     }
+    if ($IncludeFeedbackScan) {
+        Write-Host "    $fbTaskName"
+        Write-Host "        触发：每天 10:00"
+        Write-Host "        执行：`"$launcher`" feedback_scan"
+        Write-Host "        只把成功认领的回信标记已读，不碰其它未读邮件。" -ForegroundColor DarkGray
+    } else {
+        Write-Host "    （未含 $fbTaskName）" -ForegroundColor DarkGray
+        Write-Host "        它默认不注册，因为它会**读取你的收件箱** ——" -ForegroundColor DarkGray
+        Write-Host "        想用人工反馈回路就加 -IncludeFeedbackScan。" -ForegroundColor DarkGray
+    }
     Write-Host "    附加设置：错过则补跑 / 允许电池供电 / 不并发 / 超时自动结束"
     Write-Host ""
     Write-Host "    确认无误后去掉 -DryRun 重新运行即可。" -ForegroundColor Green
@@ -183,6 +200,8 @@ $morningTrigger = New-ScheduledTaskTrigger -Daily -At '08:30'
 $logTrigger = New-ScheduledTaskTrigger -Daily -At '09:00'
 # 日报放在最后：等回归（08:30）和日志分析（09:00）都跑完，汇总才有意义
 $digestTrigger = New-ScheduledTaskTrigger -Daily -At '09:30'
+# 收信放在日报之后、且与其它任务错开：IMAP 拉取很快，但没必要和早高峰挤在一起
+$feedbackTrigger = New-ScheduledTaskTrigger -Daily -At '10:00'
 
 # 执行时限必须小于触发间隔，否则一次卡死会不断堆积
 $apiSettings = New-ScheduledTaskSettingsSet -StartWhenAvailable -AllowStartIfOnBatteries `
@@ -200,12 +219,16 @@ $logSettings = New-ScheduledTaskSettingsSet -StartWhenAvailable -AllowStartIfOnB
 $dlySettings = New-ScheduledTaskSettingsSet -StartWhenAvailable -AllowStartIfOnBatteries `
     -DontStopIfGoingOnBatteries -MultipleInstances IgnoreNew `
     -ExecutionTimeLimit (New-TimeSpan -Minutes 30)
+$fbSettings = New-ScheduledTaskSettingsSet -StartWhenAvailable -AllowStartIfOnBatteries `
+    -DontStopIfGoingOnBatteries -MultipleInstances IgnoreNew `
+    -ExecutionTimeLimit (New-TimeSpan -Minutes 15)
 
 $apiAction = New-ScheduledTaskAction -Execute $launcher -Argument 'api_watch' -WorkingDirectory $ProjectRoot
 $hbAction  = New-ScheduledTaskAction -Execute $launcher -Argument 'heartbeat' -WorkingDirectory $ProjectRoot
 $regAction = New-ScheduledTaskAction -Execute $launcher -Argument 'regression' -WorkingDirectory $ProjectRoot
 $logAction = New-ScheduledTaskAction -Execute $launcher -Argument 'log_scan' -WorkingDirectory $ProjectRoot
 $dlyAction = New-ScheduledTaskAction -Execute $launcher -Argument 'daily_report' -WorkingDirectory $ProjectRoot
+$fbAction  = New-ScheduledTaskAction -Execute $launcher -Argument 'feedback_scan' -WorkingDirectory $ProjectRoot
 
 # ---------------------------------------------------------------- 注册
 Write-Step "注册计划任务"
@@ -240,6 +263,14 @@ Invoke-Or-Show {
         -Settings $dlySettings -Principal $principal -Force `
         -Description 'ops-pipeline: 每日日报（汇总运行/告警/成本）' | Out-Null
 } "注册 $dlyTaskName（每天 09:30）"
+
+if ($IncludeFeedbackScan) {
+    Invoke-Or-Show {
+        Register-ScheduledTask -TaskName $fbTaskName -Action $fbAction -Trigger $feedbackTrigger `
+            -Settings $fbSettings -Principal $principal -Force `
+            -Description 'ops-pipeline: 收人工反馈（IMAP 读回信，只标记认领的邮件）' | Out-Null
+    } "注册 $fbTaskName（每天 10:00）"
+}
 
 # ---------------------------------------------------------------- 核对
 Write-Step "核对结果"

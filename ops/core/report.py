@@ -226,5 +226,28 @@ def render_daily_markdown(digest: dict[str, Any]) -> str:
     if notes:
         lines += ["", "## 备注", ""] + [f"- {note}" for note in notes]
 
+    feedback = digest.get("feedback") or {}
+    if feedback.get("total"):
+        accuracy = feedback.get("accuracy")
+        lines += [
+            "", f"## 人工反馈（{feedback['total']} 条）", "",
+            f"- 判对 {feedback.get('up', 0)} / 判错 {feedback.get('down', 0)}"
+            + (f"，人工标注准确率 {accuracy * 100:.1f}%" if accuracy is not None else ""),
+            "",
+            "> ⚠️ 这个数字**天生有偏**：你更可能去反馈判错的那几条。",
+            "> 它只用来看趋势、找反例，不能当成模型在全部告警上的准确率。",
+        ]
+        recent = feedback.get("recent") or []
+        if recent:
+            lines += ["", "| 时间 | 判定 | 来源 | run_id | 备注 |", "|---|---|---|---|---|"]
+            for item in recent[:10]:
+                lines.append(
+                    f"| {str(item.get('created_at'))[:19]} | {item.get('vote')} | "
+                    f"{item.get('source')} | {item.get('run_id')} | {item.get('note') or ''} |"
+                )
+        if feedback.get("down"):
+            lines += ["", "**判错的那几条值得回看** —— 它们是最有价值的样本，"
+                          "可以拿去补进评测黄金集。"]
+
     lines += ["", "---", "", "_由 ops-pipeline 确定性渲染（AI 不可用时的降级版本）_", ""]
     return "\n".join(lines)

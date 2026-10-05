@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from . import aibridge, config as cfgmod, http, judge, notify, report, store
+from . import aibridge, config as cfgmod, feedback, http, judge, notify, report, store
 from ..investigate import tools as investigate
 
 PROMPT_DIR = Path(__file__).resolve().parents[1] / "prompts"
@@ -198,8 +198,20 @@ def finalize(
             ai_degraded=ai_degraded,
         )
         send_result = notifier.send(
-            subject=f"{notify.SEVERITY_LABEL.get(severity, severity)} {verdict.get('headline')}",
-            markdown=markdown,
+            subject=(
+                # 主题里带回信标记：人工反馈靠它认领是哪一条告警
+                feedback.mark_subject(
+                    f"{notify.SEVERITY_LABEL.get(severity, severity)} {verdict.get('headline')}",
+                    run_id,
+                )
+                if notifier.primary == "email"
+                else f"{notify.SEVERITY_LABEL.get(severity, severity)} {verdict.get('headline')}"
+            ),
+            markdown=(
+                markdown + "\n\n———\n" + feedback.feedback_hint(run_id)
+                if notifier.primary == "email"
+                else markdown
+            ),
         )
         send_status, detail = send_result.status, send_result.detail
         if send_result.status in {"dry-run", "failed"}:

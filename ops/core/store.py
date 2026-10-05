@@ -114,6 +114,22 @@ CREATE TABLE IF NOT EXISTS log_window (
   created_at   TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_log_window ON log_window(source, window_start DESC, template_id);
+
+-- 人工反馈：这条告警判得对吗？
+-- 离线评测能给"模型在黄金集上多准"，只有人能给"它在你这儿准不准"。
+CREATE TABLE IF NOT EXISTS feedback (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_id     TEXT NOT NULL,
+  task       TEXT,
+  -- up = 判得对；down = 判错了（误报）
+  vote       TEXT NOT NULL,
+  source     TEXT NOT NULL DEFAULT 'cli',   -- cli | email | web
+  note       TEXT,
+  created_at TEXT NOT NULL,
+  -- 同一个人对同一轮重复反馈时以最后一次为准，所以按 (run_id, source) 去重
+  UNIQUE(run_id, source)
+);
+CREATE INDEX IF NOT EXISTS idx_feedback_run ON feedback(run_id);
 """
 
 # 简单的列迁移：CREATE TABLE IF NOT EXISTS 不会给已存在的表加列，
@@ -477,6 +493,70 @@ def alert_stats_since(conn: sqlite3.Connection, since: str) -> list[dict[str, An
         (since,),
     )
     return [dict(row) for row in cur.fetchall()]
+
+
+# ------------------------------------------------------------------ 人工反馈
+
+def record_feedback(
+    conn: sqlite3.Connection,
+    *,
+    run_id: str,
+    vote: str,
+    task: str | None = None,
+    source: str = "cli",
+    note: str | None = None,
+    created_at: str | None = None,
+) -> bool:
+    """记一条人工反馈。
+
+    同一个 run_id + source 重复反馈时**以最后一次为准**（人工改主意是正常的），
+    所以用 UPSERT 而不是 INSERT OR IGNORE。
+    """
+    if vote not in ("up", "down"):
+        raise ValueError(f"vote 只能是 up/down，收到 {vote!r}")
+    conn.execute(
+        "INSERT INTO feedback(run_id, task, vote, source, note, created_at) "
+        "VALUES (?,?,?,?,?,?) "
+        "ON CONFLICT(run_id, source) DO UPDATE SET "
+        "  vote=excluded.vote, note=excluded.note, created_at=excluded.created_at",
+        (run_id, task, vote, source, note, created_at or utc_now()),
+    )
+    conn.commit()
+    return True
+
+
+def feedback_for_run(conn: sqlite3.Connection, run_id: str) -> list[dict[str, Any]]:
+    cur = conn.execute("SELECT * FROM feedback WHERE run_id=? ORDER BY created_at DESC", (run_id,))
+    return [dict(row) for row in cur.fetchall()]
+
+
+def feedback_stats(conn: sqlite3.Connection, *, since: str | None = None) -> dict[str, Any]:
+    """反馈汇总。
+
+    ⚠️ 这里算的是**人工标注的准确率**，样本来自"你愿意回一条的那些告警"——
+    天然有偏（判错的更可能被反馈）。所以它只用来看趋势与找反例，
+    **不能当成模型在全部告警上的准确率**。报告里必须这么写。
+    """
+    clause = "WHERE created_at>=?" if since else ""
+    params: tuple[Any, ...] = (since,) if since else ()
+    rows = conn.execute(
+        f"SELECT vote, COUNT(*) AS n FROM feedback {clause} GROUP BY vote", params
+    ).fetchall()
+    counts = {str(r["vote"]): int(r["n"]) for r in rows}
+    up, down = counts.get("up", 0), counts.get("down", 0)
+    total = up + down
+    recent = conn.execute(
+        f"SELECT run_id, task, vote, source, substr(COALESCE(note,''),1,120) AS note, created_at "
+        f"FROM feedback {clause} ORDER BY created_at DESC LIMIT 20",
+        params,
+    ).fetchall()
+    return {
+        "up": up,
+        "down": down,
+        "total": total,
+        "accuracy": round(up / total, 4) if total else None,
+        "recent": [dict(row) for row in recent],
+    }
 
 
 # ------------------------------------------------------------------ 日志模板与窗口

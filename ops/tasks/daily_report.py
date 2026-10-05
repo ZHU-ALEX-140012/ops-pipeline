@@ -94,6 +94,8 @@ def build_digest(conn: Any, *, hours: float, now: datetime) -> dict[str, Any]:
         "tokens": tokens,
         "unresolved": unresolved,
         "recent_alerts": recent,
+        # 人工反馈：离线评测管"模型在黄金集上多准"，只有人能管"在你这儿多准"
+        "feedback": store.feedback_stats(conn),
         "notes": notes,
     }
 
