@@ -104,6 +104,12 @@ def generate(
 
 
 def main() -> int:
+    # 中文 Windows 控制台是 GBK；不先安全化，打印中文/符号时会抛 UnicodeEncodeError，
+    # 把要显示的结果变成看起来像崩溃。
+    from ops.core import make_console_safe
+
+    make_console_safe()
+
     parser = argparse.ArgumentParser(description="合成日志生成器（可注入已知异常）")
     parser.add_argument("--out", default="data/logs/app.log", help="输出文件路径")
     parser.add_argument("--hours", type=float, default=48, help="总共生成多少小时")

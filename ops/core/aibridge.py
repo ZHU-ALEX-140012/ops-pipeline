@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Any
 
 from . import config as cfgmod
+from . import routing
 
 VERDICT_SCHEMA = "ops/verdict@1"
 SEVERITIES = {"info", "notice", "alert", "critical"}
@@ -268,12 +269,16 @@ class AIBridge:
 
     # -------------------------------------------------------------- 调用
 
-    def _argv(self, session_id: str | None) -> list[str]:
+    def _argv(self, session_id: str | None, model_patch: Path | None = None) -> list[str]:
         base = [str(self.cmd)] if self.cmd else ["dsh"]
         argv = list(base)
         argv += ["--profile", self.profile]
         if self.patch:
             argv += ["--patch", str(self.patch)]
+        # 模型 patch 必须排在 ai.patch 之后：patch 层是"后来者覆盖"，
+        # 而 ai.patch 负责 provider 与凭据，模型要压在它上面。
+        if model_patch:
+            argv += ["--patch", str(model_patch)]
         if self.json_events:
             argv.append("--json")
         if session_id:
@@ -289,6 +294,7 @@ class AIBridge:
         template_path: Path,
         run_doc: dict[str, Any],
         use_session: bool = False,
+        model: str | None = None,
     ) -> AIResult:
         if not self.enabled:
             return AIResult(ok=False, error="ai_disabled")
@@ -316,16 +322,20 @@ class AIBridge:
         prompt_path = self.runs_dir / f"{run_id}.prompt.md"
         prompt_path.write_text(prompt, encoding="utf-8")
 
+        # 模型由分流层决定（ai.model 写死时则用它）。写不进 patch 文件时返回 None，
+        # 那就是"不做分流、用 profile 默认模型" —— 这一步失败绝不能让判断层整体失败。
+        model_patch = routing.ensure_model_patch(self.cfg, model) if model else None
+
         session_id = self.load_session(task) if use_session else None
         started = time.perf_counter()
-        result = self._run_once(prompt, session_id, run_id)
+        result = self._run_once(prompt, session_id, run_id, model_patch)
         duration = time.perf_counter() - started
 
         # 会话可能已失效：清掉并用新会话重试一次（只重试一次，避免打转）
         if session_id and result["returncode"] != 0 and _looks_like_bad_session(result["stderr"]):
             self.store_session(task, None)
             started = time.perf_counter()
-            result = self._run_once(prompt, None, run_id)
+            result = self._run_once(prompt, None, run_id, model_patch)
             duration = time.perf_counter() - started
             result["note"] = "会话失效，已回退到新会话"
 
@@ -395,8 +405,9 @@ class AIBridge:
         )
 
     def _run_once(self, prompt: str, session_id: str | None,
-                  run_id: str | None = None) -> dict[str, Any]:
-        argv = self._argv(session_id)
+                  run_id: str | None = None,
+                  model_patch: Path | None = None) -> dict[str, Any]:
+        argv = self._argv(session_id, model_patch)
         # Windows 上 .cmd 必须通过 cmd.exe 执行，否则 CreateProcess 会失败
         if argv[0].lower().endswith((".cmd", ".bat")):
             argv = ["cmd.exe", "/c"] + argv

@@ -72,6 +72,12 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main() -> int:
+    # 中文 Windows 控制台是 GBK；不先安全化，打印中文/符号时会抛 UnicodeEncodeError，
+    # 把要显示的结果变成看起来像崩溃。
+    from ops.core import make_console_safe
+
+    make_console_safe()
+
     parser = argparse.ArgumentParser(description="本地故障靶子")
     parser.add_argument("--port", type=int, default=8788)
     parser.add_argument("--fail-rate", type=float, default=0.0, help="0.0~1.0，/health 返回 500 的概率")

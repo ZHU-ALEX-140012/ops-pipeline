@@ -325,62 +325,92 @@ class TestPairedArms(unittest.TestCase):
         self.assertEqual(metrics["scenarios_with_tools"], 1)
 
 
-class TestPairedReport(unittest.TestCase):
-    def _run(self, *, with_tools: bool) -> dict:
-        def arm(ok: bool, tools: int = 0, duration: float = 12.3):
-            return {"skipped": False, "tool_calls": tools, "stable": True, "pass_count": 1,
-                    "repeat": 1,
-                    "tokens": {"in": 10, "out": 5, "cache_read": 0, "cache_write": 0},
-                    "avg_duration_s": duration,
-                    "score": {"predicted": True, "expected": True, "ok": True,
-                              "alert_ok": ok, "severity_ok": True, "root_ok": True}}
 
-        def base(n: int, precision: float):
-            return {"n": n, "alert": {"precision": precision, "recall": 1.0, "f1": 0.8,
-                                      "accuracy": 0.8, "tp": 1, "fp": 1, "fn": 0, "tn": 0},
-                    "severity_accuracy": 1.0, "severity_n": n,
-                    "root_accuracy": 0.5, "root_n": n, "errors": 0}
+class TestMultiArmReport(unittest.TestCase):
+    """报告要能表达任意多臂。臂结构从 `ai`/`ai_tools` 泛化成 `arms` 列表，
+    因为"哪个模型 × 有没有工具"是二维的，写死的两列装不下。"""
 
-        ai = dict(base(1, 1.0), tokens={"in": 10, "out": 5, "cache_read": 0, "cache_write": 0},
-                  avg_duration_s=12.3, tool_calls=0, scenarios_with_tools=0,
-                  stability={"repeat": 1, "scenarios": 1, "unstable_count": 0, "unstable": []})
-        metrics = {"rule": base(1, 0.5), "rule_subset": base(1, 0.5), "ai": ai, "ai_tools": None}
-        if with_tools:
-            metrics["ai_tools"] = dict(
-                ai, tool_calls=3, scenarios_with_tools=1, avg_duration_s=45.6,
-                tokens={"in": 40, "out": 20, "cache_read": 100, "cache_write": 0})
-        return {
-            "started_at": "T", "mode": "paired" if with_tools else "ai", "suite": "golden",
-            "repeat": 1,
-            "scenarios": [{
-                "name": "s1", "task": "api_watch", "note": "note",
-                "expect": {"should_alert": True},
-                "rule": {"score": {"predicted": True, "expected": True, "ok": True,
-                                   "alert_ok": True, "severity_ok": True, "root_ok": True}},
-                "ai": arm(True),
-                "ai_tools": arm(True, 3, 45.6) if with_tools else None,
-            }],
-            "metrics": metrics,
+    def _arm(self, ok: bool = True, tools: int = 0, duration: float = 12.3):
+        return {"skipped": False, "tool_calls": tools, "stable": True, "pass_count": 1,
+                "repeat": 1,
+                "tokens": {"in": 10, "out": 5, "cache_read": 0, "cache_write": 0},
+                "avg_duration_s": duration,
+                "score": {"predicted": True, "expected": True, "ok": True,
+                          "alert_ok": ok, "severity_ok": True, "root_ok": True}}
+
+    def _metrics(self, n: int, precision: float, tokens_in: int = 10):
+        return {"n": n, "alert": {"precision": precision, "recall": 1.0, "f1": 0.8,
+                                  "accuracy": 0.8, "tp": 1, "fp": 1, "fn": 0, "tn": 0},
+                "severity_accuracy": 1.0, "severity_n": n,
+                "root_accuracy": 0.5, "root_n": n, "errors": 0,
+                "tokens": {"in": tokens_in, "out": 5, "cache_read": 0, "cache_write": 0},
+                "avg_duration_s": 12.3, "tool_calls": 0, "scenarios_with_tools": 0,
+                "stability": {"repeat": 1, "scenarios": 1, "unstable_count": 0, "unstable": []}}
+
+    def _run(self, specs: list[tuple[str, str, int]], *, with_tools: bool = False) -> dict:
+        """specs: [(key, label, tokens_in), ...]"""
+        arms = [{"key": k, "label": lab, "model": k, "with_tools": with_tools}
+                for k, lab, _ in specs]
+        metrics = {
+            "rule": self._metrics(1, 0.5),
+            "rule_subset": self._metrics(1, 0.5),
+            "arms": {k: self._metrics(1, 1.0, t) for k, _, t in specs},
+            "rule_subsets": {k: self._metrics(1, 0.5) for k, _, _ in specs},
         }
+        row = {"name": "s1", "task": "api_watch", "note": "note",
+               "expect": {"should_alert": True},
+               "rule": {"score": {"predicted": True, "expected": True, "ok": True,
+                                  "alert_ok": True, "severity_ok": True, "root_ok": True}}}
+        for k, _, _ in specs:
+            row[k] = self._arm(tools=3 if with_tools else 0)
+        return {"started_at": "T", "mode": "+".join(a["key"] for a in arms), "suite": "golden",
+                "repeat": 1, "arms": arms, "scenarios": [row], "metrics": metrics}
 
-    def test_two_column_report_without_tools(self):
-        text = eval_suite.render_markdown(self._run(with_tools=False))
-        self.assertNotIn("AI + 只读工具", text)
+    def test_single_arm_has_no_diff_section(self):
+        text = eval_suite.render_markdown(self._run([("ai", "无工具", 10)]))
+        self.assertIn("无工具", text)
+        self.assertNotIn("相对基准臂的差值", text)
 
-    def test_three_column_report_with_tools(self):
-        text = eval_suite.render_markdown(self._run(with_tools=True))
-        self.assertIn("AI + 只读工具", text)
-        self.assertIn("有工具 − 无工具", text)
+    def test_three_arms_all_appear(self):
+        text = eval_suite.render_markdown(self._run(
+            [("flash", "flash", 100), ("v4pro", "v4-pro", 200), ("route", "自动分流", 130)]))
+        for label in ("flash", "v4-pro", "自动分流"):
+            self.assertIn(label, text)
+        self.assertIn("相对基准臂的差值", text)
 
-    def test_report_states_the_fairness_caveat(self):
-        """有工具臂不是 hermetic 的 —— 报告必须自己说出来，否则对比是误导。"""
-        text = eval_suite.render_markdown(self._run(with_tools=True))
+    def test_routing_arm_gets_an_explanation(self):
+        """分流臂是成本优化，报告必须说清楚该看什么 —— 否则读者会拿它比准确率。"""
+        text = eval_suite.render_markdown(self._run(
+            [("flash", "flash", 100), ("route", "自动分流", 130)]))
+        self.assertIn("自动分流", text)
+        self.assertIn("成本优化", text)
+
+    def test_cost_table_lists_every_arm(self):
+        text = eval_suite.render_markdown(self._run(
+            [("flash", "flash", 100), ("v4pro", "v4-pro", 200)]))
+        self.assertIn("## 成本", text)
+        self.assertIn("200", text)
+
+    def test_tools_arm_gets_the_fairness_caveat(self):
+        """带工具臂不是 hermetic 的 —— 报告必须自己说出来，否则对比是误导。"""
+        text = eval_suite.render_markdown(self._run([("ai", "无工具", 10)], with_tools=True))
         self.assertIn("不是完全 hermetic", text)
         self.assertIn("investigation", text)
 
-    def test_tool_usage_shown_in_cost_section(self):
-        self.assertIn("共触发 3 次工具调用",
-                      eval_suite.render_markdown(self._run(with_tools=True)))
+    def test_skipped_scenarios_reported(self):
+        run = self._run([("ai", "无工具", 10)])
+        run["scenarios"][0]["ai"] = {"skipped": True, "reason": "heartbeat 不用判断层", "runs": []}
+        run["metrics"]["arms"]["ai"] = None
+        text = eval_suite.render_markdown(run)
+        self.assertIn("判断层不适用的场景", text)
+
+    def test_report_without_arms_does_not_crash(self):
+        """`--rule-only` 时没有任何臂，报告仍要能出。"""
+        run = self._run([("ai", "x", 10)])
+        run["arms"] = []
+        run["metrics"]["arms"] = {}
+        run["metrics"]["rule_subsets"] = {}
+        self.assertIn("判断层评测报告", eval_suite.render_markdown(run))
 
 
 class TestReportRendering(unittest.TestCase):

@@ -161,6 +161,12 @@ def make_from_source(
 
 
 def main() -> int:
+    # 中文 Windows 控制台是 GBK；不先安全化，打印中文/符号时会抛 UnicodeEncodeError，
+    # 把要显示的结果变成看起来像崩溃。
+    from ops.core import make_console_safe
+
+    make_console_safe()
+
     parser = argparse.ArgumentParser(description="生成/处理企业微信应用图标（750×750）")
     parser.add_argument("--out", default="assets/ops-alert-logo.png")
     parser.add_argument("--from", dest="source", default=None, help="用自己的图片作为素材（居中裁剪）")

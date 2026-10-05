@@ -30,6 +30,7 @@ import json
 import sys
 import time
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -37,7 +38,7 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from ops.core import aibridge, config as cfgmod, judge  # noqa: E402
+from ops.core import aibridge, config as cfgmod, judge, perspectives, routing  # noqa: E402
 from ops.investigate import tools as investigate  # noqa: E402
 
 GOLDEN_DIR = ROOT / "evals" / "golden"
@@ -206,13 +207,15 @@ def prompt_for(task: str) -> Path | None:
 
 
 def run_ai_arm(fixture: dict[str, Any], cfg: dict[str, Any], bridge: aibridge.AIBridge,
-               *, with_tools: bool = False) -> dict[str, Any]:
+               *, with_tools: bool = False, with_perspectives: bool = False,
+               model: str | None = None) -> dict[str, Any]:
     """跑一次判断层。
 
     `with_tools=True` 时把**活的**工具面（白名单、预算、可查的 run_id）注入输入 ——
     和 `pipeline.finalize` 在生产里做的事完全一致。
+    `model="route"` 表示"按分流规则自动选模型"，其余值直接钉死模型。
 
-    ⚠️ **这一臂不是完全 hermetic 的**：工具面来自当时的配置与数据库，
+    ⚠️ **带工具那一臂不是完全 hermetic 的**：工具面来自当时的配置与数据库，
     工具**结果**（日志内容、历史告警）也都是活的。这是刻意的 ——
     要衡量"生产里加上工具会怎样"，就不能把环境冻住。
     代价是这一臂的分数不能像无工具臂那样逐位复现。
@@ -233,6 +236,20 @@ def run_ai_arm(fixture: dict[str, Any], cfg: dict[str, Any], bridge: aibridge.AI
     doc["run_id"] = run_id
     if with_tools:
         doc["investigation"] = investigate.tool_context(cfg, run_id)
+    if with_perspectives:
+        # 与生产一致：只有该启用的场景才注入这个块（否则就是给每道题都加提示）
+        analysis = analysis_from_doc(doc)
+        block = perspectives.context_block(cfg, analysis, task=doc["task"])
+        if block:
+            doc["multi_perspective"] = block
+
+    chosen = model
+    tier = ""
+    if model == "route":
+        # 与生产一致：按规则层信号强度选模型。直接喂冻结夹具里的事实。
+        analysis = analysis_from_doc(doc)
+        choice = routing.decide_model(cfg, analysis, task=doc["task"])
+        chosen, tier = choice.model, choice.tier
 
     result = bridge.call(
         task=doc["task"],
@@ -241,6 +258,7 @@ def run_ai_arm(fixture: dict[str, Any], cfg: dict[str, Any], bridge: aibridge.AI
         run_doc=doc,
         # 评测绝不能用生产会话：否则一次评测就把日报的"记忆"污染了
         use_session=False,
+        model=chosen,
     )
     calls = result.tool_calls or {}
     return {
@@ -251,39 +269,101 @@ def run_ai_arm(fixture: dict[str, Any], cfg: dict[str, Any], bridge: aibridge.AI
         "run_id": run_id,
         "skipped": False,
         "with_tools": with_tools,
+        "with_perspectives": with_perspectives,
+        "model": chosen or "（profile 默认）",
+        "tier": tier,
         # 宿主侧计数：不依赖子进程写状态文件，所以任何环境都准
         "tool_calls": calls.get("investigate", 0),
         "tool_commands": calls.get("commands", []),
     }
 
 
-def run_arm_batch(fixture: dict[str, Any], cfg: dict[str, Any], bridge: aibridge.AIBridge,
-                  *, with_tools: bool, repeat: int) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-    """跑一个 AI 臂（可重复 N 次），返回 (汇总后的臂数据, 各次原始结果)。
+@dataclass
+class ArmSpec:
+    """一臂的配置。**配对比较的前提是各臂除被考察的那个变量以外完全一致。**"""
 
-    `with_tools` 与 `repeat` 都要显式传：**配对比较的前提是两个臂除"有没有工具"
-    之外完全一致**，任何一处默认值不同都会让差值失去意义。
+    key: str          # 结果 JSON 里的键，也是指标表的列键
+    label: str        # 给人看的短标签
+    model: str | None  # None = profile 默认；"route" = 自动分流；其余为具体模型
+    with_tools: bool = False
+    with_perspectives: bool = False
+
+
+def _slug(model: str | None) -> str:
+    if not model:
+        return "ai"
+    if model == "route":
+        return "route"
+    return model.replace("deepseek-", "").replace(".", "")
+
+
+def _arm_label(model: str | None) -> str:
+    return {"route": "自动分流", None: "profile 默认"}.get(model, model or "")
+
+
+def _arm_key(model: str | None, *, tools: bool, perspectives: bool) -> str:
+    key = _slug(model)
+    if tools:
+        key += "_tools"
+    if perspectives:
+        key += "_persp"
+    return key
+
+
+def build_arms(models: list[str | None], *, with_tools: bool = False,
+               with_perspectives: bool = False) -> list[ArmSpec]:
+    """把命令行给的开关展开成臂。
+
+    `--model flash --model route --tools` → 4 臂（各自再加一个带工具的版本）。
+    `--model` 缺省时是 `[None]`（profile 默认），此时臂键沿用历史的 `ai` / `ai_tools`，
+    这样早期的评测结果仍能直接对比。
+
+    带工具与多视角是**两个独立的开关**，各自给每个模型臂加一个变体 ——
+    它们衡量的是不同的问题（"能不能自证"vs"要不要分镜头"），不该互相混同。
     """
+    arms: list[ArmSpec] = []
+    variants = [(False, False)]
+    if with_tools:
+        variants.append((True, False))
+    if with_perspectives:
+        variants.append((False, True))
+    for model in models:
+        for tools, persp in variants:
+            label = _arm_label(model)
+            if tools:
+                label += " + 工具"
+            if persp:
+                label += " + 多视角"
+            arms.append(ArmSpec(key=_arm_key(model, tools=tools, perspectives=persp),
+                                label=label, model=model, with_tools=tools,
+                                with_perspectives=persp))
+    return arms
+
+
+def run_arm_batch(fixture: dict[str, Any], cfg: dict[str, Any], bridge: aibridge.AIBridge,
+                  *, arm: ArmSpec, repeat: int) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """跑一臂（可重复 N 次），返回 (汇总后的臂数据, 各次原始结果)。"""
     expect = fixture["expect"]
-    arms: list[dict[str, Any]] = []
+    runs: list[dict[str, Any]] = []
     for _ in range(max(1, repeat)):
-        result = run_ai_arm(fixture, cfg, bridge, with_tools=with_tools)
+        result = run_ai_arm(fixture, cfg, bridge, with_tools=arm.with_tools,
+                            with_perspectives=arm.with_perspectives, model=arm.model)
         if result.get("skipped"):
             return {"skipped": True, "reason": result["reason"],
                     "score": score(None, expect), "runs": []}, []
         result["score"] = score(result["verdict"], expect, result.get("error"))
-        arms.append(result)
+        runs.append(result)
 
-    first = arms[0]
-    verdicts = {a["score"]["alert_ok"] for a in arms}
+    first = runs[0]
+    verdicts = {a["score"]["alert_ok"] for a in runs}
     return {
         **first,
-        "runs": [a["score"] for a in arms],
+        "runs": [a["score"] for a in runs],
         # 稳定性：重复 N 次里"判断对错"是否一致。不一致意味着单次分数本身不可信。
         "stable": len(verdicts) == 1,
-        "pass_count": sum(1 for a in arms if a["score"]["alert_ok"]),
-        "repeat": len(arms),
-    }, arms
+        "pass_count": sum(1 for a in runs if a["score"]["alert_ok"]),
+        "repeat": len(runs),
+    }, runs
 
 
 def arm_metrics(scenarios: list[dict[str, Any]], arm: str, repeat: int,
@@ -364,52 +444,50 @@ def render_console(mode: str, metrics: dict[str, Any]) -> str:
 
 
 def render_markdown(run: dict[str, Any]) -> str:
-    ai = run["metrics"].get("ai")
-    ai_tools = run["metrics"].get("ai_tools")
-    # 对照必须用**同一子集**的规则层分数：判断层不跑的场景（如 heartbeat）
-    # 不该出现在差值里，否则两边 n 不同，差值就是假的。
-    rule = run["metrics"].get("rule_subset") or run["metrics"]["rule"]
-    all_rule = run["metrics"]["rule"]
-    skipped = [r for r in run["scenarios"] if r.get("ai") and r["ai"].get("skipped")]
+    metrics = run["metrics"]
+    all_rule = metrics["rule"]
+    arms = run.get("arms") or []
+    arm_metrics_map = metrics.get("arms") or {}
+    subset_map = metrics.get("rule_subsets") or {}
 
-    mode_label = {"ai": "AI（真实调用判断层）", "rule": "规则层（免费基线）",
-                  "paired": "配对比较：无工具 vs 有工具"}.get(run["mode"], run["mode"])
+    active = [a for a in arms if arm_metrics_map.get(a["key"])]
+    # 基准臂：第一臂。其余臂的差值都是"相对它"。
+    base = active[0] if active else None
+    base_subset = subset_map.get(base["key"]) if base else all_rule
+    # 用"臂存在"而不是"臂有指标"来判断跳过：**全部场景都被跳过**时
+    # （例如只跑 --only heartbeat）指标是空的，但"为什么跳过"必须照旧报出来。
+    probe_key = active[0]["key"] if active else (arms[0]["key"] if arms else None)
+    skipped = [r for r in run["scenarios"]
+               if probe_key and r.get(probe_key) and r[probe_key].get("skipped")]
+    has_tools_arm = any(a.get("with_tools") for a in active) or any(
+        a.get("with_tools") for a in arms)
+
     lines = [
         "# 判断层评测报告",
         "",
         f"- 时间：{run['started_at']}",
-        f"- 模式：{mode_label}",
         f"- 黄金集：{run['suite']}，共 {all_rule['n']} 个场景",
+        f"- 重复次数：{run.get('repeat', 1)}",
     ]
-    if ai:
+    if active:
+        lines.append("- 本次的臂：" + "；".join(
+            f"`{a['key']}` = {a['label']}" + ("（带工具）" if a.get("with_tools") else "")
+            for a in active))
+        n = (base_subset or all_rule)["n"]
         lines.append(
-            f"- 判断层实际覆盖：**{rule['n']} / {all_rule['n']}** 个场景"
+            f"- 判断层实际覆盖：**{n} / {all_rule['n']}** 个场景"
             + (f"（跳过 {len(skipped)} 个：判断层在这些任务上不使用）" if skipped else "")
         )
-    # 表头随"有没有跑工具臂"变形 —— 没跑就不该占一列空的
-    head = f"| 指标 | 规则层（n={rule['n']}） | AI 无工具 |"
-    sep = "|---|---|---|"
-    if ai_tools:
-        head += " AI + 只读工具 | 有工具 − 无工具 |"
-        sep += "---|---|"
-    lines += ["", "## 总分", "", head, sep]
 
-    def cell(arm: dict[str, Any] | None, key: str, scope: str | None) -> str:
+    # ---------------------------------------------------------------- 总分
+    rule_col = f"规则层（n={(base_subset or all_rule)['n']}）"
+    head = f"| 指标 | {rule_col} | " + " | ".join(a["label"] for a in active) + " |"
+    lines += ["", "## 总分", "", head, "|" + "---|" * (2 + len(active))]
+
+    def value(arm: dict[str, Any] | None, key: str, scope: str | None) -> Any:
         if not arm:
-            return "—"
-        source = arm if scope == "top" else arm["alert"]
-        return _fmt(source.get(key))
-
-    def diff(key: str, scope: str | None, left: dict[str, Any] | None,
-             right: dict[str, Any] | None) -> str:
-        if not left or not right:
-            return "—"
-        a = (left if scope == "top" else left["alert"]).get(key)
-        b = (right if scope == "top" else right["alert"]).get(key)
-        if a is None or b is None:
-            return "n/a"
-        delta = (a - b) * 100
-        return f"{'+' if delta >= 0 else ''}{delta:.1f} pp"
+            return None
+        return (arm if scope == "top" else arm["alert"]).get(key)
 
     rows = [
         ("should_alert 精确率（不误报）", "precision", None),
@@ -420,10 +498,10 @@ def render_markdown(run: dict[str, Any]) -> str:
         ("根因关键词命中率", "root_accuracy", "top"),
     ]
     for label, key, scope in rows:
-        line = (f"| {label} | {cell(rule, key, scope)} | {cell(ai, key, scope)} |")
-        if ai_tools:
-            line += f" {cell(ai_tools, key, scope)} | {diff(key, scope, ai_tools, ai)} |"
-        lines.append(line)
+        cells = [label, _fmt(value(base_subset, key, scope))]
+        for spec in active:
+            cells.append(_fmt(value(arm_metrics_map.get(spec["key"]), key, scope)))
+        lines.append("| " + " | ".join(cells) + " |")
 
     lines += [
         "",
@@ -432,47 +510,73 @@ def render_markdown(run: dict[str, Any]) -> str:
         f"（含判断层不覆盖的任务）。",
     ]
 
-    if ai and ai.get("tokens"):
-        tokens = ai["tokens"]
-        cost = [
-            f"AI 无工具：输入 {tokens['in']}（cache 读 {tokens['cache_read']} / 写 "
-            f"{tokens['cache_write']}），输出 {tokens['out']}；"
-            f"平均 {ai.get('avg_duration_s')}s/次。"
-        ]
-        if ai_tools and ai_tools.get("tokens"):
-            t2 = ai_tools["tokens"]
-            cost.append(
-                f"AI + 工具：输入 {t2['in']}（cache 读 {t2['cache_read']} / 写 "
-                f"{t2['cache_write']}），输出 {t2['out']}；"
-                f"平均 {ai_tools.get('avg_duration_s')}s/次；"
-                f"共触发 {ai_tools.get('tool_calls', 0)} 次工具调用，"
-                f"覆盖 {ai_tools.get('scenarios_with_tools', 0)} 个场景。"
-            )
-        lines += ["", *cost, "",
+    # ---------------------------------------------------------------- 相对基准臂的差值
+    if len(active) > 1:
+        lines += ["", "### 相对基准臂的差值", "",
+                  f"基准是 `{base['key']}`（{base['label']}）。"
+                  f"**每臂的对照都限制在它自己的子集上**，否则 n 不同，差值是假的。", "",
+                  "| 指标 | " + " | ".join(f"{a['label']} − 基准" for a in active[1:]) + " |",
+                  "|" + "---|" * len(active)]
+        for label, key, scope in rows:
+            cells = [label]
+            for spec in active[1:]:
+                a = value(arm_metrics_map.get(spec["key"]), key, scope)
+                b = value(arm_metrics_map.get(base["key"]), key, scope)
+                if a is None or b is None:
+                    cells.append("n/a")
+                else:
+                    delta = (a - b) * 100
+                    cells.append(f"{'+' if delta >= 0 else ''}{delta:.1f} pp")
+            lines.append("| " + " | ".join(cells) + " |")
+
+    # ---------------------------------------------------------------- 成本
+    cost_rows = []
+    for spec in active:
+        m = arm_metrics_map.get(spec["key"]) or {}
+        t = m.get("tokens") or {}
+        if not (t.get("in") or t.get("out")):
+            continue
+        cost_rows.append(
+            f"| {spec['label']} | {t.get('in', 0)} | {t.get('out', 0)} | "
+            f"{t.get('cache_read', 0)} | {m.get('avg_duration_s', 0)}s | "
+            f"{m.get('tool_calls', 0)} |"
+        )
+    if cost_rows:
+        lines += ["", "## 成本", "",
+                  "| 臂 | 输入 tokens | 输出 tokens | cache 读 | 平均耗时 | 工具调用 |",
+                  "|---|---|---|---|---|---|", *cost_rows, "",
                   "> ⚠️ cache 读的单价远低于普通输入，这里只报用量，不折算成钱。"]
 
-    if ai_tools:
+    if has_tools_arm:
         lines += [
             "",
-            "## ⚠️ 关于「AI + 工具」这一臂的公平性",
+            "## ⚠️ 关于带工具臂的公平性",
             "",
-            "无工具臂用的是**冻结夹具**，逐位可复现；**有工具臂不是完全 hermetic 的** ——",
+            "不带工具的臂用的是**冻结夹具**，逐位可复现；**带工具臂不是完全 hermetic 的** ——",
             "它的工具面来自当时的配置与数据库，工具**返回的内容**（日志原文、历史告警）",
             "也是活的。这是刻意的：要衡量「生产里加上工具会怎样」就不能把环境冻住。",
-            "代价是这一臂的分数不能像无工具臂那样逐位复现，",
-            "**跨运行比较这一臂时要按「有噪声」对待**（参见稳定性一节）。",
+            "代价是这一臂的分数不能像无工具臂那样逐位复现，"
+            "**跨运行比较它时要按「有噪声」对待**。",
             "",
-            "另一处刻意的不对称：有工具臂的输入里多了一个 `investigation` 字段。",
-            "这不是作弊 —— 生产路径（`pipeline.finalize`）就是这么注入的，",
-            "评测要衡量的正是那条路径。",
+            "另一处刻意的不对称：带工具臂的输入里多了一个 `investigation` 字段。",
+            "这不是作弊 —— 生产路径（`pipeline.finalize`）就是这么注入的。",
         ]
 
-    stability = (ai or {}).get("stability")
-    if stability and stability["repeat"] > 1:
+    if any(a.get("model") == "route" for a in active):
         lines += [
             "",
-            "## 稳定性（同一批输入重复跑）",
+            "## 关于「自动分流」臂",
             "",
+            "它按 `[ai.routing]` 的规则逐场景选模型：机械型异常走便宜模型，",
+            "需要权衡证据的升级到强模型。**分流是成本优化，不是准确率优化** ——",
+            "所以关键不是它比强模型准，而是**它比强模型便宜多少、又比便宜模型准多少**。",
+        ]
+
+    stability = (arm_metrics_map.get(base["key"]) if base else None) or {}
+    stability = stability.get("stability")
+    if stability and stability["repeat"] > 1:
+        lines += [
+            "", "## 稳定性（同一批输入重复跑）", "",
             f"重复次数 **{stability['repeat']}**，场景数 {stability['scenarios']}，"
             f"其中 **{stability['unstable_count']}** 个场景在重复之间给出了**不一致**的结论。",
             "",
@@ -480,25 +584,17 @@ def render_markdown(run: dict[str, Any]) -> str:
         if stability["unstable"]:
             lines += ["| 场景 | 答对次数 | 重复次数 |", "|---|---|---|"]
             for item in stability["unstable"]:
-                lines.append(
-                    f"| {item['name']} | {item['pass_count']} | {item['repeat']} |"
-                )
-            lines += [
-                "",
-                "> ⚠️ **这说明单次跑分本身不可靠。** 同一批输入、同一个模型，"
-                "两次全量评测的总分可以差 8pp 以上 —— 差异全部来自个别场景的翻转。"
-                "所以：看趋势要看多次重复的均值，不要拿一次结果下结论。",
-            ]
+                lines.append(f"| {item['name']} | {item['pass_count']} | {item['repeat']} |")
+            lines += ["", "> ⚠️ **单次跑分本身不可靠**，要看多次重复的均值。"]
         else:
             lines.append("所有场景在重复之间结论一致。")
 
-    has_tools_arm = bool(ai_tools)
-    header = "| 场景 | 任务 | 期望 | 规则层 | AI 无工具 |"
+    # ---------------------------------------------------------------- 逐场景
+    header = "| 场景 | 任务 | 期望 | 规则层 | " + " | ".join(a["label"] for a in active)
     if has_tools_arm:
-        header += " AI + 工具 |"
-    header += " 工具调用 | 说明 |"
-    sep = "|---|---|---|---|---|" + ("---|" if has_tools_arm else "") + "---|"
-    lines += ["", "## 逐场景", "", header, sep]
+        header += " | 工具调用"
+    header += " | 说明 |"
+    lines += ["", "## 逐场景", "", header, "|" + "---|" * (5 + len(active) + (1 if has_tools_arm else 0))]
 
     def arm_cell(arm: dict[str, Any] | None) -> str:
         if not arm:
@@ -517,28 +613,31 @@ def render_markdown(run: dict[str, Any]) -> str:
             if not row["rule"]["score"]["alert_ok"]:
                 rule_cell += " ✗"
         cells = [row["name"], row["task"],
-                 "告警" if row["expect"]["should_alert"] else "静默",
-                 rule_cell, arm_cell(row.get("ai"))]
+                 "告警" if row["expect"]["should_alert"] else "静默", rule_cell]
+        cells += [arm_cell(row.get(a["key"])) for a in active]
         if has_tools_arm:
-            cells.append(arm_cell(row.get("ai_tools")))
-        tools_used = int((row.get("ai_tools") or {}).get("tool_calls") or 0)
-        cells.append(str(tools_used) if has_tools_arm else "—")
+            used = sum(int((row.get(a["key"]) or {}).get("tool_calls") or 0)
+                       for a in active if a.get("with_tools"))
+            cells.append(str(used))
         cells.append(row["note"])
         lines.append("| " + " | ".join(cells) + " |")
 
-    if skipped:
+    if skipped and probe_key:
         lines += ["", "### 判断层不适用的场景", ""]
         for row in skipped:
-            lines.append(f"- `{row['name']}`（{row['task']}）：{row['ai']['reason']}")
+            lines.append(f"- `{row['name']}`（{row['task']}）：{row[probe_key]['reason']}")
 
+    n_arm = (base_subset or all_rule)["n"]
     lines += ["", "## 已知局限", "",
               "- `root_accuracy` 是**关键词命中**的近似，不是语义评分。它便宜、确定、可解释，"
               "适合做回归检测；真正的语义质量需要 LLM-as-judge 或人工标注。",
               f"- 黄金集只有 {all_rule['n']} 个场景，单个场景翻转就会让百分比跳动约 "
-              f"{100 / max(rule['n'], 1):.0f}pp，不要拿小数点后的差异当结论。",
+              f"{100 / max(n_arm, 1):.0f}pp，不要拿小数点后的差异当结论。",
               "- 「规则层误报、正确答案不告警」的题型目前只有 1 个。"
               "这类题最能体现判断层的独立价值，应该继续补。",
-              "- 对照臂只在判断层覆盖的子集上计算 —— 否则两边 n 不同，差值是假的。",
+              "- 对照臂只在各臂自己的子集上计算 —— 否则两边 n 不同，差值是假的。",
+              "- 多个臂在**同一次运行**里跑（配对），所以臂间差异不叠加上跨运行的波动；"
+              "但每臂仍是单次采样，重复跑才能谈稳定性。",
               ""]
     return "\n".join(lines)
 
@@ -587,13 +686,24 @@ def compare(current: dict[str, Any], previous: dict[str, Any]) -> str:
 # ---------------------------------------------------------------- 主流程
 
 def main() -> int:
+    # 必须在任何打印之前：臂标签与报告里有中文，
+    # 中文 Windows 控制台是 GBK，不先安全化就可能抛 UnicodeEncodeError。
+    from ops.core import make_console_safe
+
+    make_console_safe()
+
     parser = argparse.ArgumentParser(description="用黄金集评测判断层")
     parser.add_argument("--rule-only", action="store_true", help="只跑规则层基线（免费）")
     parser.add_argument("--only", help="只跑名字包含该子串的场景")
     parser.add_argument("--limit", type=int, help="最多跑几个场景（控成本）")
     parser.add_argument("--compare", action="store_true", help="与上一次同模式结果对比")
     parser.add_argument("--tools", action="store_true",
-                        help="配对模式：每个场景同时跑「无工具」和「有工具」两臂")
+                        help="配对模式：每个模型臂再加一个「带只读工具」的版本")
+    parser.add_argument("--perspectives", action="store_true",
+                        help="配对模式：每个模型臂再加一个「多视角诊断」的版本")
+    parser.add_argument("--model", action="append", default=None, metavar="NAME",
+                        help="钉死模型（可重复以并列多个臂）；特殊值 route = 按分流规则自动选。"
+                             "缺省则用 profile 默认模型")
     parser.add_argument("--repeat", type=int, default=1,
                         help="每个场景重复跑几次（用于量化模型的不稳定性；默认 1）")
     parser.add_argument("--timeout", type=int, default=240, help="单次判断超时（秒）")
@@ -612,23 +722,40 @@ def main() -> int:
 
     cfg = cfgmod.load_config(str(ROOT / "config" / "config.toml"))
     cfgmod.apply_overrides(cfg, [f"ai.timeout_seconds={args.timeout}"])
+    if args.perspectives:
+        # ⚠️ 必须**强制打开**：配置里默认是 false（它把 token 消耗放大数倍，
+        # 不该默认开）。不打开的话 `--perspectives` 臂根本不会注入那个块 ——
+        # 于是这一臂是空转的，对比毫无意义（第一版就是这样，白跑了一轮）。
+        cfg.setdefault("ai", {}).setdefault("multi_perspective", {})["enabled"] = True
 
-    mode = "rule" if args.rule_only else ("paired" if args.tools else "ai")
+    arms_spec = build_arms(args.model if args.model else [None],
+                           with_tools=args.tools, with_perspectives=args.perspectives)
+    if args.rule_only:
+        arms_spec = []
+    # 模式名带上臂配置：`--compare` 只会和**配置相同**的上一次结果比，
+    # 否则"flash 比 v4-pro"会被误当成"同一配置的两次运行"。
+    mode = "rule" if args.rule_only else ("+".join(a.key for a in arms_spec) or "ai")
     started_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
     bridge = None
-    if mode != "rule":
+    if not args.rule_only:
         if not (cfg.get("ai") or {}).get("enabled", True):
             print("[FAIL] 配置里 ai.enabled = false，无法跑 AI 评测")
             return 1
         bridge = aibridge.AIBridge(cfg)
 
     scenarios: list[dict[str, Any]] = []
-    total_tokens = {"in": 0, "out": 0, "cache_read": 0, "cache_write": 0}
-    tokens_with_tools = {"in": 0, "out": 0, "cache_read": 0, "cache_write": 0}
-    durations: list[float] = []
-    durations_with_tools: list[float] = []
+    tokens: dict[str, dict[str, int]] = {}
+    durations: dict[str, list[float]] = {}
+    for spec in arms_spec:
+        tokens[spec.key] = {"in": 0, "out": 0, "cache_read": 0, "cache_write": 0}
+        durations[spec.key] = []
     repeat = max(1, args.repeat)
+
+    if arms_spec:
+        print("本次运行的臂：" + "；".join(
+            f"{a.key}={a.label}" + ("（带工具）" if a.with_tools else "") for a in arms_spec))
+        print()
 
     for index, fixture in enumerate(fixtures, 1):
         rule_result = run_rule_arm(fixture)
@@ -636,41 +763,41 @@ def main() -> int:
             "name": fixture["name"], "task": fixture["task"], "note": fixture["note"],
             "expect": fixture["expect"],
             "rule": {**rule_result, "score": score(rule_result["verdict"], fixture["expect"])},
-            "ai": None,
-            "ai_tools": None,
         }
-        if bridge is not None:
-            arm, arms = run_arm_batch(fixture, cfg, bridge, with_tools=False, repeat=repeat)
-            row["ai"] = arm
-            for item in arms:
-                durations.append(item["duration_s"])
-                collect_usage(total_tokens, item["usage"])
-            if arm.get("skipped"):
-                print(f"[{index:>2}/{len(fixtures)}] SKIP {fixture['name']:<34} {arm['reason']}")
-            else:
-                marks = "".join("v" if a["score"]["alert_ok"] else "X" for a in arms)
-                print(f"[{index:>2}/{len(fixtures)}] 无工具 {marks:<6} "
-                      f"{fixture['name']:<34} {arm['duration_s']:>6.1f}s")
+        for spec in arms_spec:
+            row[spec.key] = None
 
-            if args.tools:
-                arm2, arms2 = run_arm_batch(fixture, cfg, bridge, with_tools=True, repeat=repeat)
-                row["ai_tools"] = arm2
-                for item in arms2:
-                    durations_with_tools.append(item["duration_s"])
-                    collect_usage(tokens_with_tools, item["usage"])
-                if not arm2.get("skipped"):
-                    marks2 = "".join("v" if a["score"]["alert_ok"] else "X" for a in arms2)
-                    print(f"[{index:>2}/{len(fixtures)}] 有工具 {marks2:<6} "
-                          f"{fixture['name']:<34} {arm2['duration_s']:>6.1f}s"
-                          f"  工具调用 {arm2.get('tool_calls', 0)} 次")
+        if bridge is not None:
+            for spec in arms_spec:
+                arm, runs = run_arm_batch(fixture, cfg, bridge, arm=spec, repeat=repeat)
+                row[spec.key] = arm
+                for item in runs:
+                    durations[spec.key].append(item["duration_s"])
+                    collect_usage(tokens[spec.key], item["usage"])
+                if arm.get("skipped"):
+                    print(f"[{index:>2}/{len(fixtures)}] SKIP {fixture['name']:<34} {arm['reason']}")
+                    continue
+                marks = "".join("v" if a["score"]["alert_ok"] else "X" for a in runs)
+                extra = ""
+                if arm.get("model"):
+                    extra = f"  模型 {arm['model']}"
+                    if arm.get("tier"):
+                        extra += f"（{arm['tier']}）"
+                if arm.get("tool_calls"):
+                    extra += f"  工具 {arm['tool_calls']} 次"
+                print(f"[{index:>2}/{len(fixtures)}] {marks:<6} {spec.label:<14} "
+                      f"{fixture['name']:<34} {arm['duration_s']:>6.1f}s{extra}")
         scenarios.append(row)
 
     rule_metrics = aggregate([r["rule"]["score"] for r in scenarios])
-    ai_metrics = arm_metrics(scenarios, "ai", repeat, total_tokens, durations)
-    rule_subset_metrics = rule_subset(scenarios, "ai", repeat)
-    ai_tools_metrics = arm_metrics(scenarios, "ai_tools", repeat, tokens_with_tools,
-                                   durations_with_tools) if args.tools else None
-    rule_subset_tools_metrics = rule_subset(scenarios, "ai_tools", repeat) if args.tools else None
+    # 每个臂各自算指标；对照臂（规则层）限制在**该臂的同一子集与同样重复次数**上，
+    # 否则两边 n 不同，差值就是假的。
+    arm_metrics_map: dict[str, dict[str, Any] | None] = {}
+    subset_metrics_map: dict[str, dict[str, Any] | None] = {}
+    for spec in arms_spec:
+        arm_metrics_map[spec.key] = arm_metrics(scenarios, spec.key, repeat,
+                                                tokens[spec.key], durations[spec.key])
+        subset_metrics_map[spec.key] = rule_subset(scenarios, spec.key, repeat)
 
     run = {
         "schema": "ops/eval@1",
@@ -678,26 +805,28 @@ def main() -> int:
         "mode": mode,
         "suite": "golden",
         "repeat": repeat,
+        "arms": [{"key": a.key, "label": a.label, "model": a.model,
+                  "with_tools": a.with_tools} for a in arms_spec],
         "scenarios": scenarios,
         "metrics": {
             "rule": rule_metrics,
-            "rule_subset": rule_subset_metrics,
-            "ai": ai_metrics,
-            "ai_tools": ai_tools_metrics,
-            "rule_subset_tools": rule_subset_tools_metrics,
+            "rule_subset": subset_metrics_map.get(arms_spec[0].key) if arms_spec else None,
+            "arms": arm_metrics_map,
+            "rule_subsets": subset_metrics_map,
         },
     }
 
     EVAL_DIR.mkdir(parents=True, exist_ok=True)
     stamp = started_at.replace(":", "").replace("-", "")
-    json_path = EVAL_DIR / f"{stamp}-{mode}.json"
-    md_path = EVAL_DIR / f"{stamp}-{mode}.md"
+    safe_mode = mode.replace("+", "_")
+    json_path = EVAL_DIR / f"{stamp}-{safe_mode}.json"
+    md_path = EVAL_DIR / f"{stamp}-{safe_mode}.md"
     json_path.write_text(json.dumps(run, ensure_ascii=False, indent=2), encoding="utf-8")
 
     report = render_markdown(run)
     previous = None
     if args.compare:
-        candidates = sorted(EVAL_DIR.glob(f"*-{mode}.json"))
+        candidates = sorted(EVAL_DIR.glob(f"*-{safe_mode}.json"))
         candidates = [p for p in candidates if p != json_path]
         if candidates:
             previous = json.loads(candidates[-1].read_text(encoding="utf-8"))
@@ -706,15 +835,11 @@ def main() -> int:
 
     print()
     print(render_console("rule(all)", rule_metrics))
-    if rule_subset_metrics:
-        print()
-        print(render_console("rule(same subset as ai)", rule_subset_metrics))
-    if ai_metrics:
-        print()
-        print(render_console("ai (no tools)", ai_metrics))
-    if ai_tools_metrics:
-        print()
-        print(render_console("ai + readonly tools", ai_tools_metrics))
+    for spec in arms_spec:
+        metrics = arm_metrics_map.get(spec.key)
+        if metrics:
+            print()
+            print(render_console(spec.label, metrics))
     print()
     print(f"报告: {md_path}")
     print(f"数据: {json_path}")

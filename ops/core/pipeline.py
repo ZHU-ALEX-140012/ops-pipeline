@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from . import aibridge, config as cfgmod, feedback, http, judge, notify, report, store
+from . import aibridge, config as cfgmod, feedback, http, judge, notify, perspectives, report, routing, store
 from ..investigate import tools as investigate
 
 PROMPT_DIR = Path(__file__).resolve().parents[1] / "prompts"
@@ -100,12 +100,24 @@ def finalize(
             # 放在这里（生产路径）而不是桥接层：评测用的是冻结夹具，
             # 注入活的配置/数据库内容会让评测不再可复现。
             run_doc = {**run_doc, "investigation": investigate.tool_context(cfg, run_id)}
+            # 多视角诊断：需要多镜头时，先派子代理分头查证再汇总。
+            # 放在数据里而不是提示词里 —— 提示词保持静态，是否分镜头由这轮的事实决定，
+            # 评测也就能靠注入/不注入这个块来跑对照臂。
+            block = perspectives.context_block(cfg, analysis, task=task)
+            if block:
+                run_doc = {**run_doc, "multi_perspective": block}
+                ai_notes.append(f"多视角诊断已启用：{block['reason']}")
+            # 小模型分流：机械型异常用便宜模型，需要权衡的升级到强模型。
+            # 选择理由一并落库，事后能回答"这次用了哪个、为什么"。
+            choice = routing.decide_model(cfg, analysis, task=task)
+            ai_notes.append(f"模型：{choice.model}（{choice.tier}）—— {choice.reason}")
             result = bridge.call(
                 task=task,
                 run_id=run_id,
                 template_path=PROMPT_DIR / f"{prompt_name}.md",
                 run_doc=run_doc,
                 use_session=(session_policy == "persistent"),
+                model=choice.model,
             )
             ai_called = True
             usage = result.usage

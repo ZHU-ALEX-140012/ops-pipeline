@@ -37,6 +37,61 @@ max_calls_per_day = 30
 # AI 失败时的行为：degrade=规则层兜底并标注"未经 AI 分析" | skip=跳过判断
 on_failure = "degrade"
 
+# 判断层用的模型。"auto" = 交给下面的分流决定；写具体模型名则**钉死**
+# （评测要能分别跑"全便宜"和"全强"两臂，所以需要一个绕过分流的开关）。
+model = "auto"
+# 模型所属 provider（与 config/dsh-headless.patch.yml 里的一致）
+provider = "deepseek-account"
+
+# ---------------------------------------------------------------- 小模型分流
+#
+# 判断层面对的情形不是同一种难度：
+#   机械型（日志源不见了 / 心跳发现任务没跑 / 整轮采到 0 条）—— 事实即结论；
+#   解释型（200 但内容变了 / 延迟涨 6 倍但只有单样本 / 冒出新错误模板）——
+#   要在几股证据之间做取舍。
+#
+# 便宜模型不是缩水版，它在明确的情形下够用；强模型的价值集中在"证据互相矛盾"的时候。
+# 这个分流是**可配置的先验，不是结论** —— 好坏必须用评测回答：
+#   python tools/eval_suite.py --model deepseek-flash      # 全便宜
+#   python tools/eval_suite.py --model deepseek-v4-pro     # 全强
+#   python tools/eval_suite.py                             # 自动分流
+[ai.routing]
+enabled = true
+cheap_model = "deepseek-flash"
+strong_model = "deepseek-v4-pro"
+# 异常项达到几个就升级（多股证据要合并）
+escalate_min_anomalies = 2
+# 失败目标达到几个就升级（可能同源也可能各自独立）
+escalate_min_failed = 2
+# 出现这些类型一律升级：它们要求"解释"，不只是"报事实"
+escalate_kinds = ["structure_change", "latency_regression", "new_error_template",
+                  "count_spike", "parse_ratio_low"]
+# 每轮都要做汇总综合的任务（句子里没有"异常"，但负担在归纳上）
+always_strong_tasks = []
+
+# ---------------------------------------------------------------- 多视角诊断
+#
+# 单次判断里，模型要在同一次思考中同时回答三个性质不同的问题：
+#   目标自身的行为变了吗？（接口/契约镜头）
+#   日志里有对应证据吗？（日志证据镜头）
+#   这是新问题还是反复出现的？（历史趋势镜头）
+# 它们会互相干扰 —— 模型容易抓住最显眼的那条线索就下结论，
+# 而最显眼的不一定最相关（一个延迟飙升的错误簇，真实原因可能在三天前的历史里）。
+#
+# 启用后，判断层会**先并行派子代理分头查证，再汇总**，
+# 并被要求逐条标明结论来自哪个镜头。
+#
+# 代价：**子代理会把 token 消耗放大数倍**。所以只在真的需要多镜头时才开 ——
+# 机械型异常（日志源不见了、心跳发现任务没跑）不启用，那种情形事实即结论。
+# 触发条件与上面的分流升级条件**故意接近**（都看"是否需要权衡证据"），
+# 但两者是独立开关：可以"强模型 + 单镜头"，也可以"便宜模型 + 多镜头"。
+[ai.multi_perspective]
+enabled = false
+max_subagents = 3
+trigger_min_anomalies = 2
+trigger_kinds = ["structure_change", "latency_regression", "new_error_template",
+                 "count_spike", "parse_ratio_low"]
+
 # ---------------------------------------------------------------- 只读调查工具
 #
 # 给判断层一组收窄到最小的调查动作，每个动作只能碰**配置里已声明过的对象**：
