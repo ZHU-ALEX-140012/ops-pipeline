@@ -473,10 +473,15 @@ python tools/eval_suite.py --compare       # 与上次对比 → 回归检测
 
 | 工具 | 能碰什么 | 边界控制 |
 |---|---|---|
-| `read_log` | 按 `[[log_scan.sources]]` 里的**名字**读日志尾部 | 不接受路径 → 没有路径穿越；有界读（实测 11MB 日志 0.02 秒）；输出截断 |
-| `query_history` | 以**只读**方式查历史运行与告警 | `mode=ro`，不可用则退到 `PRAGMA query_only`（写入同样被 SQLite 拒绝） |
-| `probe_target` | 按 `[[api_watch.targets]]` 里的**名字**重新探测 | 不接受 URL/主机名 → 不能拿这台机器当跳板扫内网 |
+| `read_log` | 按 `[[log_scan.sources]]` 里的**名字**读日志尾部 | 不接受路径 → 没有路径穿越；**有界尾读**（实测 11MB 日志 0.02 秒）；输出截断 |
+| `query_history` | 以**只读**方式查历史运行与告警 | `mode=ro`，不可用则退到 `PRAGMA query_only`（写入同样被 SQLite 拒绝）；连接与语句都有超时 |
+| `probe_target` | 按 `[[api_watch.targets]]` 里的**名字**重新探测 | 不接受 URL/主机名 → 不能拿这台机器当跳板扫内网；探测自带超时 |
 | `read_report` | 读 `data/reports` 下某次运行的报告 | 校验 run_id 形状 + 路径必须落在报告目录内 |
+
+> **关于"超时"**：这里没有用外部看门狗，而是让**每个操作本身有界** ——
+> 文件读有字节上限、网络探测有超时、数据库连接和语句有超时。
+> 这比"跑起来再掐"更可靠：Python 杀不掉卡住的线程，而"有界"从构造上就不会卡住。
+> 另外每一次工具调用外面还有 harness 自己的 tool-call 超时兜底。
 
 ```bash
 python tools/investigate.py catalog          # 看允许访问什么、还剩几次预算
