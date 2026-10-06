@@ -326,6 +326,90 @@ def failures_since(conn: sqlite3.Connection, target: str, hours: int = 24) -> in
     return int(cur.fetchone()["n"])
 
 
+def price_history(conn: sqlite3.Connection, item: str, *, days: int = 30,
+                  limit: int = 500, exclude_run_id: str | None = None) -> dict[str, Any]:
+    """价格历史：中位价、窗口最低、最近值与**最近一次变化**。
+
+    ## ⚠️ 为什么必须能排除某一轮（`exclude_run_id`）
+
+    价格判据里有一条是"**相对上一次**的变化幅度"。而这一轮的样本在统计之前
+    就已经落库了 —— 如果不排除本轮，`last_value` 就是**本轮自己**，
+    于是 `(现价 - 上次价) / 上次价` 恒等于 0，**`price_drop` 永远不会触发**。
+    这个 bug 不会报错、不会变慢，只会安静地什么都不做。
+
+    对照一下 `api_watch`：那里**故意**包含本轮 —— "这是第 3 次连续失败"
+    本来就该把当前这次失败算进去。**同一个表，两个场景要的基线不一样。**
+
+    ## ⚠️ 另一个坑：`ts` 只有秒级精度
+
+    两次运行落在同一秒时，`ORDER BY ts` 排不出先后。所以额外用 `rowid` 兜底
+    （插入顺序即真实顺序），否则"上一次价格"可能是任意一条同秒的记录。
+
+    ## `last_at` 与 `last_changed_at` 的区别
+
+    * `last_at`：最近一次**成功抓到价格**
+    * `last_changed_at`：最近一次**价格发生变化**
+
+    前者旧了说明**数据源挂了**（要报警），后者旧了只说明**价格稳定**（是好事，别报）。
+    把这两个混成一个字段，就会得到"价格三天没变，系统以为采集坏了"这种误报。
+    """
+    now = datetime.now(timezone.utc)
+    since = (now - timedelta(days=days)).isoformat().replace("+00:00", "Z")
+    sql = ("SELECT value_num, ts FROM sample WHERE target=? AND metric='price' AND ok=1 "
+           "AND value_num IS NOT NULL AND ts>=?")
+    params: list[Any] = [item, since]
+    if exclude_run_id:
+        sql += " AND run_id<>?"
+        params.append(exclude_run_id)
+    # rowid 兜底：秒级 ts 相同时按插入顺序排（见上面的说明）
+    sql += " ORDER BY ts ASC, rowid ASC LIMIT ?"
+    params.append(limit)
+    cur = conn.execute(sql, params)
+    rows = [(float(r["value_num"]), str(r["ts"])) for r in cur.fetchall()]
+
+    fail_sql = ("SELECT COUNT(*) AS n FROM sample WHERE target=? AND metric='price' "
+                "AND ok=0 AND ts>=?")
+    fail_params: list[Any] = [item, since]
+    if exclude_run_id:
+        fail_sql += " AND run_id<>?"
+        fail_params.append(exclude_run_id)
+    failed = conn.execute(fail_sql, fail_params).fetchone()
+
+    out: dict[str, Any] = {
+        "item": item, "samples": len(rows), "failures": int(failed["n"]),
+        "median": None, "lowest": None, "lowest_at": None,
+        "last_value": None, "last_at": None,
+        "last_changed_value": None, "last_changed_at": None, "changes": 0,
+        "minutes_since_seen": None, "minutes_since_change": None,
+    }
+    if not rows:
+        return out
+
+    values = [value for value, _ in rows]
+    out["median"] = round(statistics.median(values), 2)
+    out["lowest"] = min(values)
+    out["lowest_at"] = next(ts for value, ts in rows if value == out["lowest"])
+    out["last_value"], out["last_at"] = rows[-1]
+
+    # 变化次数与最后一次变化时刻：从头扫一遍，价格变了就记一次
+    previous = None
+    for value, ts in rows:
+        if previous is not None and value != previous:
+            out["changes"] += 1
+            out["last_changed_value"], out["last_changed_at"] = value, ts
+        previous = value
+    if out["last_changed_at"] is None:
+        out["last_changed_value"], out["last_changed_at"] = rows[0][0], rows[0][1]
+
+    def minutes(ts: str | None) -> float | None:
+        moment = _parse_ts(ts) if ts else None
+        return round((now - moment).total_seconds() / 60, 1) if moment else None
+
+    out["minutes_since_seen"] = minutes(out["last_at"])
+    out["minutes_since_change"] = minutes(out["last_changed_at"])
+    return out
+
+
 # ------------------------------------------------------------------ verdict / alert
 
 def record_verdict(conn: sqlite3.Connection, verdict: dict[str, Any], model: str | None = None) -> None:

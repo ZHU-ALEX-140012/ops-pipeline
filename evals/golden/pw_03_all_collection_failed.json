@@ -1,0 +1,95 @@
+{
+  "name": "pw_03_all_collection_failed",
+  "task": "price_watch",
+  "note": "一个价都没抓到 —— 应告警，且必须说清这是「我们瞎了」不是「价格没降」",
+  "expect": {
+    "should_alert": true,
+    "severity_any_of": [
+      "alert",
+      "critical"
+    ]
+  },
+  "run_doc": {
+    "schema": "ops/run@1",
+    "run_id": "eval-price_watch",
+    "task": "price_watch",
+    "started_at": "2026-10-06T09:00:00Z",
+    "finished_at": "2026-10-06T09:00:00Z",
+    "status": "degraded",
+    "metrics": {
+      "items": 2,
+      "targets": 2,
+      "ok": 0,
+      "failed": 2,
+      "anomalies": 3,
+      "lowest": null,
+      "highest": null
+    },
+    "samples": [
+      {
+        "target": "rtx5070",
+        "metric": "price",
+        "value_num": null,
+        "value_text": "RTX 5070 显卡",
+        "currency": "CNY",
+        "ok": 0,
+        "ts": "2026-10-06T09:00:00Z",
+        "status_code": null,
+        "error": "URLError: timed out"
+      },
+      {
+        "target": "rtx5080",
+        "metric": "price",
+        "value_num": null,
+        "value_text": "RTX 5080 显卡",
+        "currency": "CNY",
+        "ok": 0,
+        "ts": "2026-10-06T09:00:00Z",
+        "status_code": null,
+        "error": "HTTP 503（非 2xx 视为没取到价格）"
+      }
+    ],
+    "anomalies": [
+      {
+        "kind": "price_no_data",
+        "target": "-",
+        "detail": "本轮 2 个商品**一个价格都没抓到**（0 条 = 失败，不是没降价）",
+        "severity_hint": "alert"
+      },
+      {
+        "kind": "price_missing",
+        "target": "rtx5070",
+        "detail": "没取到「RTX 5070 显卡」的价格：URLError: timed out（取不到 ≠ 没降价）",
+        "severity_hint": "alert"
+      },
+      {
+        "kind": "price_missing",
+        "target": "rtx5080",
+        "detail": "没取到「RTX 5080 显卡」的价格：HTTP 503（取不到 ≠ 没降价）",
+        "severity_hint": "alert"
+      }
+    ],
+    "notes": [],
+    "artifacts": [],
+    "baseline": {
+      "rtx5070": {
+        "samples": 22,
+        "median": 4550.0,
+        "lowest": 3850.0,
+        "last_value": 4299.0,
+        "minutes_since_seen": 400.0,
+        "minutes_since_change": 0.0,
+        "currency": "CNY"
+      },
+      "rtx5080": {
+        "samples": 18,
+        "median": null,
+        "lowest": null,
+        "last_value": null,
+        "minutes_since_seen": 400.0,
+        "minutes_since_change": 0.0,
+        "currency": "CNY"
+      }
+    }
+  }
+}

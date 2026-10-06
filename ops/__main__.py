@@ -19,12 +19,14 @@ from typing import Any
 
 from .core import config as cfgmod
 from .core import make_console_safe
-from .tasks import api_watch, daily_report, feedback_scan, heartbeat, log_scan, regression
+from .tasks import (api_watch, daily_report, feedback_scan, heartbeat, log_scan,
+                    price_watch, regression)
 
 TASKS: dict[str, Any] = {
     "api_watch": api_watch.run,
     "regression": regression.run,
     "log_scan": log_scan.run,
+    "price_watch": price_watch.run,
     "daily_report": daily_report.run,
     "feedback_scan": feedback_scan.run,
     "heartbeat": heartbeat.run,

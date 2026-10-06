@@ -67,6 +67,7 @@ def finalize(
     item_label: str = "目标",
     value_label: str = "延迟",
     value_suffix: str = "ms",
+    report_style: dict[str, Any] | None = None,
     always_ai: bool = False,
     dry_run: bool = False,
     no_ai: bool = False,
@@ -283,6 +284,7 @@ def finalize(
         cfg, task=task, run_id=run_id, analysis=analysis.to_dict(), verdict=verdict,
         item_label=item_label, value_label=value_label, value_suffix=value_suffix,
         extra_lines=ai_notes + log_lines,
+        **(report_style or {}),
     )
     report.write_run_doc(cfg, run_id, run_doc)
 

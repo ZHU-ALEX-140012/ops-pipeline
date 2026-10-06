@@ -76,6 +76,9 @@ def main(argv: list[str] | None = None) -> int:
     p_probe = sub.add_parser("probe", help="立刻重新探测一个已配置目标")
     p_probe.add_argument("--target", required=True)
 
+    p_price = sub.add_parser("check-price", help="立刻重新抓一个已配置商品的当前价格")
+    p_price.add_argument("--item", required=True)
+
     p_rep = sub.add_parser("report", help="读某次运行的报告")
     p_rep.add_argument("--run-id", required=True, dest="run_id")
 
@@ -88,6 +91,7 @@ def main(argv: list[str] | None = None) -> int:
         print("# 允许访问的对象（只能按名字取，不接受路径）")
         print(f"- 日志源（read-log --source）：{info['configured_log_sources'] or '（无）'}")
         print(f"- 探测目标（probe --target）：{info['configured_targets'] or '（无）'}")
+        print(f"- 商品（check-price --item）：{info['configured_price_items'] or '（无）'}")
         print(f"- 任务（history --task）：{info['available_tasks'] or '（无）'}")
         print(f"- 最近可查的 run_id（report --run-id）：{info['recent_run_ids'] or '（无）'}")
         print(f"- 工具预算：{verdict.reason}")
@@ -119,6 +123,8 @@ def main(argv: list[str] | None = None) -> int:
         result = toolmod.dispatch(cfg, "query_history", kwargs)
     elif args.command == "probe":
         result = toolmod.dispatch(cfg, "probe_target", {"target": args.target})
+    elif args.command == "check-price":
+        result = toolmod.dispatch(cfg, "check_price", {"item": args.item})
     else:
         result = toolmod.dispatch(cfg, "read_report", {"run_id": args.run_id})
 

@@ -242,11 +242,66 @@ def _heartbeat(spec: dict[str, Any]) -> dict[str, Any]:
                 samples=samples, anomalies=anomalies, baseline=baseline)
 
 
+# ---------------------------------------------------------------- price_watch
+
+def _price_watch(spec: dict[str, Any]) -> dict[str, Any]:
+    """价格场景。
+
+    注意 `baseline` 里的样本数与「上次价格」是**分别给出**的 ——
+    生产上这两个值来自同一张表但含义不同（`samples` 是历史样本数、
+    `last_value` 是**上一轮**的价格）。夹具把它们显式写出来，
+    是为了让"冷启动"这类题能被明确地构造出来。
+    """
+    items = spec["items"]
+    samples = []
+    for it in items:
+        ok = it.get("ok", True)
+        samples.append({
+            "target": it["name"],
+            "metric": "price",
+            "value_num": it.get("value") if ok else None,
+            "value_text": it.get("label", it["name"]),
+            "currency": it.get("currency", "CNY"),
+            "ok": 1 if ok else 0,
+            "ts": TS,
+            "status_code": None,
+            "error": it.get("error"),
+        })
+
+    baseline = {
+        it["name"]: {
+            "samples": it.get("samples", 0),
+            "median": it.get("median"),
+            "lowest": it.get("lowest"),
+            "last_value": it.get("last_value"),
+            "minutes_since_seen": it.get("minutes_since_seen", 0.0),
+            "minutes_since_change": it.get("minutes_since_change", 0.0),
+            "currency": it.get("currency", "CNY"),
+        }
+        for it in items
+    }
+    ok_items = [it for it in items if it.get("ok", True)]
+    values = [it["value"] for it in ok_items if it.get("value") is not None]
+    anomalies = spec.get("anomalies") or []
+    metrics = {
+        "items": len(items),
+        "targets": len(items),
+        "ok": len(ok_items),
+        "failed": len(items) - len(ok_items),
+        "anomalies": len(anomalies),
+        "lowest": min(values) if values else None,
+        "highest": max(values) if values else None,
+    }
+    return _doc("price_watch", status="degraded" if anomalies else "ok",
+                metrics=metrics, samples=samples, anomalies=anomalies, baseline=baseline)
+
+
 BUILDERS = {
     "api_watch": _api_watch,
     "regression": _regression,
     "log_scan": _log_scan,
     "heartbeat": _heartbeat,
+    "price_watch": _price_watch,
 }
 
 
@@ -725,6 +780,104 @@ SCENARIOS: list[dict[str, Any]] = [
         "limits_minutes": {"api_watch": 100.0, "regression": 2170.0, "daily_report": 2170.0},
         "expect": {"should_alert": True, "severity_any_of": ["alert", "critical"],
                    "mention_any": ["api_watch"]},
+    },
+
+    # ------------------------------------------------------------ price_watch
+    {
+        "name": "pw_01_quiet",
+        "task": "price_watch",
+        "note": "价格在目标价之上正常波动、其它商品也无变化 —— 反向用例：不该打扰",
+        "items": [
+            {"name": "rtx5070", "label": "RTX 5070 显卡", "value": 4499.0,
+             "samples": 20, "median": 4550.0, "lowest": 4399.0,
+             "last_value": 4520.0, "minutes_since_change": 300.0},
+            {"name": "rtx5080", "label": "RTX 5080 显卡", "value": 8299.0,
+             "samples": 18, "median": 8300.0, "lowest": 8100.0,
+             "last_value": 8299.0, "minutes_since_change": 900.0},
+        ],
+        "anomalies": [],
+        "expect": {"should_alert": False, "severity_any_of": ["info"]},
+    },
+    {
+        "name": "pw_02_target_hit",
+        "task": "price_watch",
+        "note": "跌破用户设的目标价 —— 应告警，而且语气是「可以买了」不是「出事了」",
+        "items": [
+            {"name": "rtx5070", "label": "RTX 5070 显卡", "value": 3799.0,
+             "samples": 22, "median": 4550.0, "lowest": 3850.0,
+             "last_value": 4299.0, "minutes_since_change": 10.0},
+            {"name": "rtx5080", "label": "RTX 5080 显卡", "value": 8299.0,
+             "samples": 18, "median": 8300.0, "lowest": 8100.0,
+             "last_value": 8299.0, "minutes_since_change": 900.0},
+        ],
+        "anomalies": [
+            {"kind": "price_below_target", "target": "rtx5070",
+             "detail": "「RTX 5070 显卡」现价 ¥3,799 已到你的目标价 ¥4,000（低 5.0%）",
+             "severity_hint": "notice"},
+            {"kind": "price_drop", "target": "rtx5070",
+             "detail": "「RTX 5070 显卡」¥4,299 → ¥3,799，一次降了 11.6%（阈值 8.0%）",
+             "severity_hint": "notice"},
+        ],
+        "expect": {"should_alert": True, "severity_any_of": ["notice", "alert"],
+                   "mention_any": ["rtx5070", "5070"]},
+    },
+    {
+        "name": "pw_03_all_collection_failed",
+        "task": "price_watch",
+        "note": "一个价都没抓到 —— 应告警，且必须说清这是「我们瞎了」不是「价格没降」",
+        "items": [
+            {"name": "rtx5070", "label": "RTX 5070 显卡", "ok": False,
+             "error": "URLError: timed out", "samples": 22, "median": 4550.0,
+             "lowest": 3850.0, "last_value": 4299.0, "minutes_since_seen": 400.0},
+            {"name": "rtx5080", "label": "RTX 5080 显卡", "ok": False,
+             "error": "HTTP 503（非 2xx 视为没取到价格）", "samples": 18,
+             "minutes_since_seen": 400.0},
+        ],
+        "anomalies": [
+            {"kind": "price_no_data", "target": "-",
+             "detail": "本轮 2 个商品**一个价格都没抓到**（0 条 = 失败，不是没降价）",
+             "severity_hint": "alert"},
+            {"kind": "price_missing", "target": "rtx5070",
+             "detail": "没取到「RTX 5070 显卡」的价格：URLError: timed out（取不到 ≠ 没降价）",
+             "severity_hint": "alert"},
+            {"kind": "price_missing", "target": "rtx5080",
+             "detail": "没取到「RTX 5080 显卡」的价格：HTTP 503（取不到 ≠ 没降价）",
+             "severity_hint": "alert"},
+        ],
+        "expect": {"should_alert": True, "severity_any_of": ["alert", "critical"]},
+    },
+    {
+        "name": "pw_04_cold_start_false_new_low",
+        "task": "price_watch",
+        "note": "规则层按「创新低」报了，但历史只有 2 条样本 —— 应驳回，不能断言新低",
+        "items": [
+            {"name": "rx9070", "label": "RX 9070 显卡", "value": 3799.0,
+             "samples": 2, "median": 4199.0, "lowest": 4199.0,
+             "last_value": 4199.0, "minutes_since_change": 60.0},
+        ],
+        "anomalies": [
+            {"kind": "price_new_low", "target": "rx9070",
+             "detail": "「RX 9070 显卡」现价 ¥3,799 是近 14 天最低（此前最低 ¥4,199）",
+             "severity_hint": "notice"},
+        ],
+        "expect": {"should_alert": False, "severity_any_of": ["info", "notice"]},
+    },
+    {
+        "name": "pw_05_price_rise",
+        "task": "price_watch",
+        "note": "一次涨 18% —— 应提醒（缺货/临时加价），但别写成故障",
+        "items": [
+            {"name": "rtx5080", "label": "RTX 5080 显卡", "value": 9799.0,
+             "samples": 18, "median": 8300.0, "lowest": 8100.0,
+             "last_value": 8299.0, "minutes_since_change": 30.0},
+        ],
+        "anomalies": [
+            {"kind": "price_rise", "target": "rtx5080",
+             "detail": "「RTX 5080 显卡」¥8,299 → ¥9,799，一次涨了 18.1%（阈值 15.0%）"
+                       "—— 可能是缺货或临时加价",
+             "severity_hint": "notice"},
+        ],
+        "expect": {"should_alert": True, "severity_any_of": ["notice", "alert"]},
     },
 ]
 

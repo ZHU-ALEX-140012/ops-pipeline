@@ -1,5 +1,5 @@
 {
-  "count": 19,
+  "count": 24,
   "scenarios": [
     "aw_01_healthy",
     "aw_02_single_target_down",
@@ -19,6 +19,11 @@
     "ls_05_parse_ratio_low",
     "ls_06_new_info_template_benign",
     "hb_01_all_fresh",
-    "hb_02_stale_task"
+    "hb_02_stale_task",
+    "pw_01_quiet",
+    "pw_02_target_hit",
+    "pw_03_all_collection_failed",
+    "pw_04_cold_start_false_new_low",
+    "pw_05_price_rise"
   ]
 }

@@ -304,6 +304,71 @@ user_env = "OPS_MAIL_USER"
 pass_env = "OPS_MAIL_PASS"
 to_env = "OPS_MAIL_TO"
 
+# ---------------------------------------------------------------- 价格监控
+#
+# 把骨架复用到"盯价格"这个场景：采集换成"按配置抓 JSON 里的价格字段"，
+# 判据换成价格语义（到价 / 单次降幅 / 窗口新低 / 数据源静默），
+# 其余（落库、AI 归因、去重冷却、邮件、报告、只读工具、小模型分流）全部复用。
+#
+# ⚠️ 为什么采集是配置驱动、而不是写死爬某个电商：
+# 那类页面有反爬、有 ToS 限制、改版就失效。把系统绑在一个随时会坏的抓取上，
+# 是这类项目最常见的死法。这里只提供"给定 JSON 地址 + 取值路径就能用"的能力。
+#
+# 怎么试：先起本地价格源（一个演示/验证用的桩，不碰任何真实站点）
+#   python tools/price_stub.py --port 8790
+# 然后把它打开：把下面 items 里的 enabled 改成 true
+[price_watch]
+timeout_ms = 8000
+# 历史回看天数（用于判断"是否创新低"）
+history_days = 30
+# 每轮都调用判断层（价格判断本来就便宜；只在需要时调用也行，改成 false）
+always_ai = false
+# 采集间隔内的最小请求间隔，避免把对方打疼
+rate_limit_ms = 800
+
+# 默认判据。单个商品没写 rules 时用它。
+[price_watch.default_rules]
+# 到价提醒（这是唯一"绝对"的判据 —— 价格没有"正常值"）
+target_price = 4000
+# 单次变化幅度阈值（相对上一次，不是相对中位数）
+drop_percent = 8
+rise_percent = 15
+# 创 N 天新低（历史样本少于 3 条时不做这个判断）
+new_low_days = 14
+# 多久没**成功抓到**就认为数据源挂了（注意：价格"没变"不算）
+stale_hours = 6
+
+# 要盯的商品。默认关着 —— 它指向本地的演示桩，没起桩就会变成误报。
+[[price_watch.items]]
+name = "rtx5070"
+label = "RTX 5070 显卡"
+url = "http://127.0.0.1:8790/price/rtx5070"
+# JSON 取值路径（支持 a.b.0.c）；本地桩把价格放在 data.price 下
+price_path = "data.price"
+currency = "CNY"
+enabled = false
+# 单个商品的判据可以直接写在这里，覆盖 default_rules
+target_price = 4000
+drop_percent = 8
+
+[[price_watch.items]]
+name = "rtx5080"
+label = "RTX 5080 显卡"
+url = "http://127.0.0.1:8790/price/rtx5080"
+price_path = "data.price"
+currency = "CNY"
+enabled = false
+target_price = 7500
+
+[[price_watch.items]]
+name = "rx9070"
+label = "RX 9070 显卡"
+url = "http://127.0.0.1:8790/price/rx9070"
+price_path = "data.price"
+currency = "CNY"
+enabled = false
+target_price = 3800
+
 # ---------------------------------------------------------------- 每日日报
 # 设计方案 §12 的「报告统一入口」：不管有没有异常都发一份，
 # 让"今天一切正常"也成为一条明确信息（而不是靠沉默去推断）。

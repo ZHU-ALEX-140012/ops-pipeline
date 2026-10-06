@@ -1,0 +1,63 @@
+{
+  "name": "pw_04_cold_start_false_new_low",
+  "task": "price_watch",
+  "note": "规则层按「创新低」报了，但历史只有 2 条样本 —— 应驳回，不能断言新低",
+  "expect": {
+    "should_alert": false,
+    "severity_any_of": [
+      "info",
+      "notice"
+    ]
+  },
+  "run_doc": {
+    "schema": "ops/run@1",
+    "run_id": "eval-price_watch",
+    "task": "price_watch",
+    "started_at": "2026-10-06T09:00:00Z",
+    "finished_at": "2026-10-06T09:00:00Z",
+    "status": "degraded",
+    "metrics": {
+      "items": 1,
+      "targets": 1,
+      "ok": 1,
+      "failed": 0,
+      "anomalies": 1,
+      "lowest": 3799.0,
+      "highest": 3799.0
+    },
+    "samples": [
+      {
+        "target": "rx9070",
+        "metric": "price",
+        "value_num": 3799.0,
+        "value_text": "RX 9070 显卡",
+        "currency": "CNY",
+        "ok": 1,
+        "ts": "2026-10-06T09:00:00Z",
+        "status_code": null,
+        "error": null
+      }
+    ],
+    "anomalies": [
+      {
+        "kind": "price_new_low",
+        "target": "rx9070",
+        "detail": "「RX 9070 显卡」现价 ¥3,799 是近 14 天最低（此前最低 ¥4,199）",
+        "severity_hint": "notice"
+      }
+    ],
+    "notes": [],
+    "artifacts": [],
+    "baseline": {
+      "rx9070": {
+        "samples": 2,
+        "median": 4199.0,
+        "lowest": 4199.0,
+        "last_value": 4199.0,
+        "minutes_since_seen": 0.0,
+        "minutes_since_change": 60.0,
+        "currency": "CNY"
+      }
+    }
+  }
+}

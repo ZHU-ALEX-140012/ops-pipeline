@@ -40,7 +40,8 @@ param(
     [switch]$Remove,
     [switch]$DryRun,
     [switch]$IncludeLogScan,
-    [switch]$IncludeFeedbackScan
+    [switch]$IncludeFeedbackScan,
+    [switch]$IncludePriceWatch
 )
 
 $ErrorActionPreference = 'Stop'
@@ -53,6 +54,7 @@ $regTaskName = 'OpsPipeline-Regression'
 $logTaskName = 'OpsPipeline-LogScan'
 $dlyTaskName = 'OpsPipeline-DailyReport'
 $fbTaskName  = 'OpsPipeline-FeedbackScan'
+$priceTaskName = 'OpsPipeline-PriceWatch'
 
 # 默认注册四个任务：接口巡检、回归、日报、心跳。它们的输入都在项目内，装好就能跑。
 #
@@ -65,11 +67,16 @@ $fbTaskName  = 'OpsPipeline-FeedbackScan'
 # 现在只会把"成功认领的回信"标记已读（第一版会把全部未读标成已读，已修并有单测），
 # 但"让一个程序定时读我的邮箱"应该是一个显式选择 —— 想用就加 -IncludeFeedbackScan。
 #
+# price_watch 为什么默认不注册：它盯的商品默认指向**本地演示桩**（tools/price_stub.py），
+# 没起桩就会每轮都报"没抓到价格"。把 items 换成你真正想盯的地址后，
+# 用 -IncludePriceWatch 一并注册。
+#
 # 日报默认注册：它汇总"已经注册的那些任务"的运行情况，
 # 不管有没有异常都发一份，让"今天一切正常"也成为明确信息。
 $taskNames = @($apiTaskName, $hbTaskName, $regTaskName, $dlyTaskName)
 if ($IncludeLogScan) { $taskNames += $logTaskName }
 if ($IncludeFeedbackScan) { $taskNames += $fbTaskName }
+if ($IncludePriceWatch) { $taskNames += $priceTaskName }
 
 function Write-Step($text) { Write-Host "==> $text" -ForegroundColor Cyan }
 function Invoke-Or-Show([scriptblock]$action, [string]$description) {
@@ -181,6 +188,15 @@ if ($DryRun) {
         Write-Host "        它默认不注册，因为它会**读取你的收件箱** ——" -ForegroundColor DarkGray
         Write-Host "        想用人工反馈回路就加 -IncludeFeedbackScan。" -ForegroundColor DarkGray
     }
+    if ($IncludePriceWatch) {
+        Write-Host "    $priceTaskName"
+        Write-Host "        触发：每天 09:15"
+        Write-Host "        执行：`"$launcher`" price_watch"
+    } else {
+        Write-Host "    （未含 $priceTaskName）" -ForegroundColor DarkGray
+        Write-Host "        它盯的商品默认指向本地演示桩（tools/price_stub.py），" -ForegroundColor DarkGray
+        Write-Host "        换成你真正想盯的地址后，加 -IncludePriceWatch 一并注册。" -ForegroundColor DarkGray
+    }
     Write-Host "    附加设置：错过则补跑 / 允许电池供电 / 不并发 / 超时自动结束"
     Write-Host ""
     Write-Host "    确认无误后去掉 -DryRun 重新运行即可。" -ForegroundColor Green
@@ -202,6 +218,8 @@ $logTrigger = New-ScheduledTaskTrigger -Daily -At '09:00'
 $digestTrigger = New-ScheduledTaskTrigger -Daily -At '09:30'
 # 收信放在日报之后、且与其它任务错开：IMAP 拉取很快，但没必要和早高峰挤在一起
 $feedbackTrigger = New-ScheduledTaskTrigger -Daily -At '10:00'
+# 价格检查放在早上：起床时看一眼"今天要不要买"
+$priceTrigger = New-ScheduledTaskTrigger -Daily -At '09:15'
 
 # 执行时限必须小于触发间隔，否则一次卡死会不断堆积
 $apiSettings = New-ScheduledTaskSettingsSet -StartWhenAvailable -AllowStartIfOnBatteries `
@@ -222,6 +240,9 @@ $dlySettings = New-ScheduledTaskSettingsSet -StartWhenAvailable -AllowStartIfOnB
 $fbSettings = New-ScheduledTaskSettingsSet -StartWhenAvailable -AllowStartIfOnBatteries `
     -DontStopIfGoingOnBatteries -MultipleInstances IgnoreNew `
     -ExecutionTimeLimit (New-TimeSpan -Minutes 15)
+$priceSettings = New-ScheduledTaskSettingsSet -StartWhenAvailable -AllowStartIfOnBatteries `
+    -DontStopIfGoingOnBatteries -MultipleInstances IgnoreNew `
+    -ExecutionTimeLimit (New-TimeSpan -Minutes 20)
 
 $apiAction = New-ScheduledTaskAction -Execute $launcher -Argument 'api_watch' -WorkingDirectory $ProjectRoot
 $hbAction  = New-ScheduledTaskAction -Execute $launcher -Argument 'heartbeat' -WorkingDirectory $ProjectRoot
@@ -229,6 +250,7 @@ $regAction = New-ScheduledTaskAction -Execute $launcher -Argument 'regression' -
 $logAction = New-ScheduledTaskAction -Execute $launcher -Argument 'log_scan' -WorkingDirectory $ProjectRoot
 $dlyAction = New-ScheduledTaskAction -Execute $launcher -Argument 'daily_report' -WorkingDirectory $ProjectRoot
 $fbAction  = New-ScheduledTaskAction -Execute $launcher -Argument 'feedback_scan' -WorkingDirectory $ProjectRoot
+$priceAction = New-ScheduledTaskAction -Execute $launcher -Argument 'price_watch' -WorkingDirectory $ProjectRoot
 
 # ---------------------------------------------------------------- 注册
 Write-Step "注册计划任务"
@@ -270,6 +292,14 @@ if ($IncludeFeedbackScan) {
             -Settings $fbSettings -Principal $principal -Force `
             -Description 'ops-pipeline: 收人工反馈（IMAP 读回信，只标记认领的邮件）' | Out-Null
     } "注册 $fbTaskName（每天 10:00）"
+}
+
+if ($IncludePriceWatch) {
+    Invoke-Or-Show {
+        Register-ScheduledTask -TaskName $priceTaskName -Action $priceAction -Trigger $priceTrigger `
+            -Settings $priceSettings -Principal $principal -Force `
+            -Description 'ops-pipeline: 价格监控（到价 / 异常涨跌 → 邮件）' | Out-Null
+    } "注册 $priceTaskName（每天 09:15）"
 }
 
 # ---------------------------------------------------------------- 核对

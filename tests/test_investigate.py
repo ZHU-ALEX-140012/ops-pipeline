@@ -311,13 +311,24 @@ class TestMcpProtocol(InvestigateTestBase):
     def test_initialized_notification_has_no_response(self):
         self.assertIsNone(self._call({"jsonrpc": "2.0", "method": "notifications/initialized"}))
 
-    def test_tools_list_declares_four_tools_with_schema(self):
+    def test_tools_list_declares_every_tool_with_schema(self):
+        """断言"必需的都在 + 每个都有 schema"，而不是写死数量。
+
+        原来这里写的是 `assertEqual(名字集合, {四个工具})` —— 加第五个工具
+        （price_watch 的 `check_price`）时它就假失败了。**工具数量不是契约，
+        "每个工具都有可校验的 schema"才是。**
+        """
         resp = self._call({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
         tools = resp["result"]["tools"]
-        self.assertEqual({t["name"] for t in tools},
-                         {"read_log", "query_history", "probe_target", "read_report"})
+        names = {t["name"] for t in tools}
+        self.assertLessEqual(
+            {"read_log", "query_history", "probe_target", "check_price", "read_report"}, names
+        )
+        self.assertEqual(names, set(toolmod.HANDLERS),
+                         "tools/list 暴露的必须与 HANDLERS 完全一致（漏一个模型就用不到）")
         for tool in tools:
             self.assertIn("description", tool)
+            self.assertTrue(tool["description"].strip())
             self.assertEqual(tool["inputSchema"]["type"], "object")
             self.assertIn("required", tool["inputSchema"])
 

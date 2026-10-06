@@ -1,0 +1,75 @@
+{
+  "name": "pw_01_quiet",
+  "task": "price_watch",
+  "note": "价格在目标价之上正常波动、其它商品也无变化 —— 反向用例：不该打扰",
+  "expect": {
+    "should_alert": false,
+    "severity_any_of": [
+      "info"
+    ]
+  },
+  "run_doc": {
+    "schema": "ops/run@1",
+    "run_id": "eval-price_watch",
+    "task": "price_watch",
+    "started_at": "2026-10-06T09:00:00Z",
+    "finished_at": "2026-10-06T09:00:00Z",
+    "status": "ok",
+    "metrics": {
+      "items": 2,
+      "targets": 2,
+      "ok": 2,
+      "failed": 0,
+      "anomalies": 0,
+      "lowest": 4499.0,
+      "highest": 8299.0
+    },
+    "samples": [
+      {
+        "target": "rtx5070",
+        "metric": "price",
+        "value_num": 4499.0,
+        "value_text": "RTX 5070 显卡",
+        "currency": "CNY",
+        "ok": 1,
+        "ts": "2026-10-06T09:00:00Z",
+        "status_code": null,
+        "error": null
+      },
+      {
+        "target": "rtx5080",
+        "metric": "price",
+        "value_num": 8299.0,
+        "value_text": "RTX 5080 显卡",
+        "currency": "CNY",
+        "ok": 1,
+        "ts": "2026-10-06T09:00:00Z",
+        "status_code": null,
+        "error": null
+      }
+    ],
+    "anomalies": [],
+    "notes": [],
+    "artifacts": [],
+    "baseline": {
+      "rtx5070": {
+        "samples": 20,
+        "median": 4550.0,
+        "lowest": 4399.0,
+        "last_value": 4520.0,
+        "minutes_since_seen": 0.0,
+        "minutes_since_change": 300.0,
+        "currency": "CNY"
+      },
+      "rtx5080": {
+        "samples": 18,
+        "median": 8300.0,
+        "lowest": 8100.0,
+        "last_value": 8299.0,
+        "minutes_since_seen": 0.0,
+        "minutes_since_change": 900.0,
+        "currency": "CNY"
+      }
+    }
+  }
+}

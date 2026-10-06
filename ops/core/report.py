@@ -8,7 +8,7 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from . import config as cfgmod
 
@@ -23,6 +23,10 @@ def render_run_markdown(
     item_label: str = "目标",
     value_label: str = "延迟",
     value_suffix: str = "ms",
+    # 版式回调。默认是"探测"版式；别的场景（例如价格）通过它们换掉
+    # "值怎么显示"和"基线表有哪些列"，而不用改这个通用渲染器。
+    value_format: Callable[[dict[str, Any]], str] | None = None,
+    baseline_columns: list[tuple[str, Callable[[dict[str, Any]], str]]] | None = None,
 ) -> str:
     metrics = analysis.get("metrics") or {}
     lines: list[str] = [
@@ -81,7 +85,10 @@ def render_run_markdown(
     for sample in analysis.get("samples") or []:
         ok = "OK" if sample.get("ok") else "FAIL"
         value = sample.get("value_num")
-        shown = "" if value is None else f"{value}{value_suffix}"
+        if value_format is not None:
+            shown = value_format(sample)
+        else:
+            shown = "" if value is None else f"{value}{value_suffix}"
         lines.append(
             f"| {sample.get('target')} | {ok} | {shown} | "
             f"{sample.get('status_code') if sample.get('status_code') is not None else ''} | "
@@ -90,13 +97,25 @@ def render_run_markdown(
 
     baseline = analysis.get("baseline") or {}
     if baseline:
-        lines += ["", "## 基线对照", "", f"| {item_label} | 基线样本 | p50 | p95 | 连续失败 | 24h 失败 |", "|---|---|---|---|---|---|"]
-        for target, info in baseline.items():
-            lines.append(
-                f"| {target} | {info.get('samples')} | {info.get('p50_ms')}ms | "
-                f"{info.get('p95_ms')}ms | {info.get('consecutive_failures')} | "
-                f"{info.get('failures_24h')} |"
-            )
+        if baseline_columns:
+            heads = " | ".join(name for name, _ in baseline_columns)
+            lines += ["", "## 基线对照", "",
+                      f"| {item_label} | 基线样本 | {heads} |",
+                      "|" + "---|" * (2 + len(baseline_columns))]
+            for target, info in baseline.items():
+                cells = [str(target), str(info.get("samples"))]
+                cells += [_cell(info) for _, _cell in baseline_columns]
+                lines.append("| " + " | ".join(cells) + " |")
+        else:
+            lines += ["", "## 基线对照", "",
+                      f"| {item_label} | 基线样本 | p50 | p95 | 连续失败 | 24h 失败 |",
+                      "|---|---|---|---|---|---|"]
+            for target, info in baseline.items():
+                lines.append(
+                    f"| {target} | {info.get('samples')} | {info.get('p50_ms')}ms | "
+                    f"{info.get('p95_ms')}ms | {info.get('consecutive_failures')} | "
+                    f"{info.get('failures_24h')} |"
+                )
 
     notes = analysis.get("notes") or []
     if notes:
@@ -140,6 +159,8 @@ def write_run_report(
     item_label: str = "目标",
     value_label: str = "延迟",
     value_suffix: str = "ms",
+    value_format: Callable[[dict[str, Any]], str] | None = None,
+    baseline_columns: list[tuple[str, Callable[[dict[str, Any]], str]]] | None = None,
 ) -> Path:
     path = report_path(cfg, run_id, task)
     path.write_text(
@@ -147,6 +168,7 @@ def write_run_report(
             task=task, run_id=run_id, analysis=analysis, verdict=verdict,
             extra_lines=extra_lines, item_label=item_label,
             value_label=value_label, value_suffix=value_suffix,
+            value_format=value_format, baseline_columns=baseline_columns,
         ),
         encoding="utf-8",
     )

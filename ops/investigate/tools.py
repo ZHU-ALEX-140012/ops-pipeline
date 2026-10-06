@@ -85,6 +85,21 @@ TOOL_SPECS: dict[str, dict[str, Any]] = {
             "additionalProperties": False,
         },
     },
+    "check_price": {
+        "description": (
+            "立刻重新抓一个已配置商品的当前价格（只能按 configured_price_items 里的名字取，"
+            "不接受 URL），用来确认'现在还是这个价吗'。"
+            "注意：取不到价格是**采集失败**，不等于价格没变。"
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "item": {"type": "string", "description": "商品名，见 configured_price_items"},
+            },
+            "required": ["item"],
+            "additionalProperties": False,
+        },
+    },
     "read_report": {
         "description": "读某一次运行的报告正文（Markdown），用来对照历史上同类问题的结论。",
         "inputSchema": {
@@ -133,6 +148,16 @@ def api_targets(cfg: dict[str, Any]) -> dict[str, dict[str, Any]]:
         name = target.get("name")
         if name:
             out[str(name)] = target
+    return out
+
+
+def price_items(cfg: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """名字 → 商品配置。同样只认识配置文件里声明过的商品。"""
+    out: dict[str, dict[str, Any]] = {}
+    for item in (cfg.get("price_watch") or {}).get("items") or []:
+        name = item.get("name")
+        if name:
+            out[str(name)] = item
     return out
 
 
@@ -355,6 +380,55 @@ def probe_target(cfg: dict[str, Any], *, target: str) -> ToolResult:
     return ToolResult(True, text, {"ok": result.ok, "latency_ms": result.latency_ms})
 
 
+def check_price(cfg: dict[str, Any], *, item: str) -> ToolResult:
+    """立刻重新抓一次某个已配置商品的价格。
+
+    价格**随时会变**，而喂给你的输入是几分钟前的快照 ——
+    所以"现在还是这个价吗"是一个能直接改变结论的问题
+    （尤其是"到价了"这种结论：差 20 块就决定买不买）。
+
+    只能按 `configured_price_items` 里的名字取，**不接受 URL** ——
+    否则模型就能拿这台机器当跳板去请求任意地址。
+    """
+    from ..core import prices as prices_mod
+
+    if not isinstance(item, str) or not NAME_RE.match(item):
+        return ToolResult(False, "item 名不合法")
+    known = price_items(cfg)
+    if item not in known:
+        return ToolResult(
+            False,
+            f"未知商品 {item!r}。可用：{sorted(known) or '（配置里没有声明任何商品）'}",
+        )
+
+    task_cfg = cfg.get("price_watch") or {}
+    pcfg = http.ProbeConfig(
+        timeout_ms=int(task_cfg.get("timeout_ms", 8000)),
+        retries=0,
+        rate_limit_ms=0,
+    )
+    point = prices_mod.collect_item(known[item], pcfg)
+    lines = [
+        f"# 商品 {item} 的即时价格",
+        f"- 结果：{'成功' if point.ok else '失败'}",
+        f"- 现价：{prices_mod.format_price(point.value, point.currency)}",
+        f"- 时间：{point.ts}",
+    ]
+    rule = prices_mod.PriceRules.from_config(known[item].get("rules") or known[item])
+    if rule.target_price is not None and point.value is not None:
+        hit = point.value <= rule.target_price
+        lines.append(
+            f"- 你的目标价：{prices_mod.format_price(rule.target_price, point.currency)}"
+            f"（{'**已到价**' if hit else '还没到'}）"
+        )
+    if point.error:
+        lines.append(f"- 错误：{point.error}")
+    if not point.ok:
+        lines.append("- ⚠️ 取不到价格 ≠ 没降价：这是**采集失败**，不能解读成价格没变。")
+    return ToolResult(True, "\n".join(lines),
+                      {"ok": point.ok, "price": point.value, "currency": point.currency})
+
+
 def read_report(cfg: dict[str, Any], *, run_id: str) -> ToolResult:
     if not isinstance(run_id, str) or not RUN_ID_RE.match(run_id):
         return ToolResult(False, "run_id 形状不合法（只允许字母、数字、点、下划线、连字符）")
@@ -378,6 +452,7 @@ HANDLERS: dict[str, Callable[..., ToolResult]] = {
     "read_log": read_log,
     "query_history": query_history,
     "probe_target": probe_target,
+    "check_price": check_price,
     "read_report": read_report,
 }
 
@@ -408,6 +483,7 @@ def catalog(cfg: dict[str, Any]) -> dict[str, Any]:
     return {
         "configured_log_sources": sorted(log_sources(cfg)),
         "configured_targets": sorted(api_targets(cfg)),
+        "configured_price_items": sorted(price_items(cfg)),
         "available_tasks": known_tasks(cfg),
         "recent_run_ids": recent_report_ids(cfg),
     }
@@ -434,10 +510,12 @@ def tool_context(cfg: dict[str, Any], run_id: str | None = None) -> dict[str, An
             "read_log": "read-log --source <日志源名> [--tail N] [--pattern <正则>]",
             "query_history": "history --task <任务名> [--target <目标名>] [--days N]",
             "probe_target": "probe --target <目标名>",
+            "check_price": "check-price --item <商品名>",
             "read_report": "report --run-id <run_id>",
         },
         "allowed_log_sources": info["configured_log_sources"],
         "allowed_targets": info["configured_targets"],
+        "allowed_price_items": info["configured_price_items"],
         "allowed_tasks": info["available_tasks"],
         "recent_run_ids": info["recent_run_ids"],
         "budget": {
