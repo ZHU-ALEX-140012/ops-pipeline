@@ -357,51 +357,56 @@ stale_hours = 6
 # 2026 年内存短缺推着它一路涨价 —— Founders Edition 从 $3,999 涨到 $4,699，
 # 国行约 ¥30,000 起（京东自营约 ¥32,999）。所以 rise_percent 在这里比
 # drop_percent 更值得盯：涨到位之前买、或者涨得离谱时知道"再等等"。
+# ✅ 已按你的选择切成**京东自动抓**（2026-10 实测确认这条路可行）。
+#
+# 京东实测结论：
+#   item.m.jd.com/product/<sku>.html   ✅ 可达（275KB 真实页面）
+#   item.jd.com/<sku>.html             ❌ 2.7KB 反爬页
+#   p.3.cn/prices/mgets                ❌ 超时（京东自营价格接口）
+#   c0.3.cn/stock                      ❌ DNS 失败
+# 页面里价格的位置是 `"priceLoginText":"登录查看价格"` —— **价格在登录墙后面**，
+# 所以必须带上你的登录 Cookie。
+#
+# ============================================================ 你要做的两步
+#
+# 第 1 步：录入 Cookie（一条命令，值只进本地密钥文件，不进版本库/不进对话）
+#     scripts\set-secret.cmd -Name OPS_JD_COOKIE -Hint "京东登录 Cookie"
+#   取值方法：浏览器登录京东 → F12 → Network → 点任意请求 →
+#             复制 Request Headers 里的整条 Cookie（形如 pt_key=xxx; pt_pin=yyy; ...）
+#
+# 第 2 步：验证 + 拿到这条商品真正的价格正则（页面结构可能会变，别猜）
+#     python tools/price_probe.py --url "https://item.m.jd.com/product/100254961843.html" --cookie-env OPS_JD_COOKIE --min 15000 --max 80000
+#   它会列出页面里"像价格的东西"并直接给出可用的 price_regex。
+#   下面那个正则是一个**覆盖面较广的默认值**，如果它匹配不到，
+#   把 price_probe 给出的那条替换掉即可。
+#
+# ⚠️ 在你设好 Cookie 之前，这个商品每轮都会报"页面要求登录才能看到价格"——
+#    **那不是 bug，是它在告诉你自己现在是瞎的。** 设好之后就不再出现。
+#    嫌吵就先把它 enabled 改成 false，配好再打开。
+#
+# ⚠️ Cookie 会过期。过期后同样会报警 —— 那是对的行为，
+#    宁可被吵醒，也不要安静地以为没事。
 [[price_watch.items]]
 name = "dgx_spark"
 label = "NVIDIA DGX Spark 128GB"
-#
-# ---------------------------------------------------------------- 京东实测结论
-#
-# 我实测过京东这条路，结论是**能自动抓，但必须带你的登录 Cookie**：
-#
-#   item.m.jd.com/product/<sku>.html   ✅ 可达（275KB 真实页面，标题能拿到）
-#   item.jd.com/<sku>.html             ❌ 2.7KB 反爬页
-#   p.3.cn/prices/mgets（京东自营价接口）❌ 超时
-#   c0.3.cn/stock（库存价接口）         ❌ DNS 失败
-#
-# 页面里价格的位置是 `"priceLoginText":"登录查看价格"` —— 也就是**价格在登录墙后面**。
-# 想做自动抓，按下面三步：
-#
-#   1) 浏览器登录京东 → F12 → Network → 随便点一个请求 → 复制 Request Headers 里的
-#      整条 Cookie（形如 pt_key=xxx; pt_pin=yyy; ...）
-#   2) 放进 config/secrets.local.toml（**不进版本库**）：
-#        OPS_JD_COOKIE = "pt_key=...; pt_pin=..."
-#   3) 把下面三行取消注释（并注释掉 source = "manual"）：
-#        # source = "html"
-#        # url = "https://item.m.jd.com/product/100254961843.html"
-#        # price_regex = '"p":"([0-9.]+)"'
-#        # cookie_env = "OPS_JD_COOKIE"
-#        # 合理区间是**必需的**：实测宽松正则会在京东页面上匹配到 "price":4，
-#        # 于是 ¥4 会被当成这台三万块设备的价格。有区间就拦得住。
-#        # min_price = 15000
-#        # max_price = 80000
-#
-# 京东的 SKU（两个都在售，取一个即可）：
-#   100254961843  DGX Spark AI超算迷你主机（128GB/4TB）
-#   100296702712  DGX Spark GB10 桌面级AI超算迷你电脑主机
-#
-# ⚠️ Cookie 会过期。过期后采集会失败并**报警** —— 那是**对**的行为，
-#    因为那意味着"你的监控瞎了"。宁可被吵醒，也不要安静地以为没事。
-#
-# 在配好 Cookie 之前，用人工录入（下面这行），它现在就是可用的：
-source = "manual"
+source = "html"
+# 两个在售 SKU 任选其一（另一个见下方注释）
+url = "https://item.m.jd.com/product/100254961843.html"
+# 默认正则覆盖常见几种字段形态；price_probe 能给出更准的
+price_regex = '"(?:p|price|jdPrice)"\s*:\s*"?([0-9][0-9,]*(?:\.[0-9]+)?)"?'
+# 凭据只写"环境变量名"，值从环境变量或 config/secrets.local.toml 读
+cookie_env = "OPS_JD_COOKIE"
 currency = "CNY"
 enabled = true
-
+# 另一个 SKU（想换就换这一行）：
+#   url = "https://item.m.jd.com/product/100296702712.html"
+#
+# 想让"人工录入的价格"也参与（例如 Cookie 暂时不可用时手动补一条）：
+#   把 source 改回 "manual"，用 tools/price_set.py --item dgx_spark --price <价格>
+#
 # --- 判据（这几行是最该按你自己情况改的）---
-# 你的心理价位：到这个价就提醒你。¥28,000 是我按"京东自营约 ¥32,999"给的保守默认，
-# **请改成你自己的数**。
+# 你的心理价位：到这个价就提醒你。京东自营现价约 ¥32,999，
+# 所以现在这个值暂时不会触发到价提醒 —— 按你说的"等看到真实价格再改"。
 target_price = 28000
 # 贵东西的百分比要调小：5% 就是 1500 块，值得知道
 drop_percent = 5
@@ -409,12 +414,10 @@ drop_percent = 5
 rise_percent = 5
 # 贵设备的"新低"要看更长的窗口，否则一个月的正常波动都算新低
 new_low_days = 60
-# ⚠️ 人工录入的商品**必须把静默阈值调大**：默认 6 小时会让你每天收到
-#    "很久没抓到价格"。这里放到 30 天，只在"你确实很久没记了"时提醒一句。
-#    （换成自动抓之后，可以调回 24~48 小时。）
-stale_hours = 720
-# ⚠️ 合理性区间。**自动抓时必须设**（见上面的实测说明）；
-#    人工录入时它也是一道保险，防止手滑少打一位数。
+# 自动抓：两天都抓不到就提醒（人工录入时才需要调成几百小时）
+stale_hours = 48
+# ⚠️ 合理性区间。**自动抓时必须设** —— 实测宽松正则会在京东页面上匹配到
+#    "price":"4??00" 里的 4，于是 ¥4 会被当成这台三万块设备的价格。
 min_price = 15000
 max_price = 80000
 

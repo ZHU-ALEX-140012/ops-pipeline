@@ -340,7 +340,7 @@ ops-pipeline/
 │  └─ notify_test.py      告警通道测试（配好通道后先点一炮）
 ├─ evals/                 评测黄金集与夹具
 ├─ scripts/               计划任务注册、通用凭据录入、启动包装
-└─ tests/                 497 个单元测试
+└─ tests/                 501 个单元测试
 ```
 
 ---
@@ -1013,22 +1013,31 @@ python tools/price_set.py --item dgx_spark --price <你看到的价格> --note "
 那几个 `?` 是**真的问号字符**（0x3F）—— 京东对**未登录**请求返回的是
 **掩码占位价**。所以结论确定：**京东要登录才给价格**，不是反爬也不是配置问题。
 
-**想做自动抓，三步**：
+**要做自动抓，两步（命令都实测过）**：
 
 ```bash
-# 1) 浏览器登录京东 → F12 → Network → 复制 Request Headers 里的整条 Cookie
-#    （形如 pt_key=xxx; pt_pin=yyy; ...）
-# 2) 放进 config/secrets.local.toml（不进版本库，和邮箱授权码走同一套机制）
-#    OPS_JD_COOKIE = "pt_key=...; pt_pin=..."
-# 3) 把 config.toml 里 dgx_spark 的那三行取消注释（注释里写了确切内容）
+# 第 1 步：录入 Cookie（值只进本地密钥文件，不进版本库、不进对话记录）
+scripts\set-secret.cmd -Name OPS_JD_COOKIE -Hint "京东登录 Cookie"
+#   取值方法：浏览器登录京东 → F12 → Network → 点任意请求 →
+#             复制 Request Headers 里的整条 Cookie（形如 pt_key=xxx; pt_pin=yyy; ...）
+#   想确认录进去了：scripts\set-secret.cmd -List   （值会打码显示）
+
+# 第 2 步：验证 + 拿到这条商品真正的价格正则（页面结构会变，别猜）
 python tools/price_probe.py --url "https://item.m.jd.com/product/100254961843.html" \
-    --cookie-env OPS_JD_COOKIE --test '"p":"([0-9.]+)"' --min 15000 --max 80000
+    --cookie-env OPS_JD_COOKIE --min 15000 --max 80000
+#   它会列出页面里"像价格的东西"，并直接给出能粘进 config.toml 的 price_regex。
+#   config.toml 里已经放了一条覆盖面较广的默认正则；
+#   如果它匹配不到，把 price_probe 给出的那条替换掉即可。
 ```
 
-> ⚠️ **Cookie 会过期。** 过期后采集会失败并**报警** —— 那是**对**的行为，
-> 因为那意味着"你的监控瞎了"。宁可被吵醒，也不要安静地以为没事。
+`dgx_spark` 已经切成 `source = "html"` + 京东移动页 + `cookie_env = OPS_JD_COOKIE`，
+**所以录完 Cookie 就直接能跑了，不用再改配置**。
 
-在配好 Cookie 之前，`source = "manual"` 现在就是可用的。
+> ⚠️ **在你录好 Cookie 之前，它每轮都会报"页面要求登录才能看到价格"。**
+> **那不是 bug，是它在告诉你自己现在是瞎的。** 嫌吵就先把 `enabled` 改成 `false`。
+>
+> ⚠️ **Cookie 会过期。** 过期后同样会报警 —— 那是对的行为，
+> 宁可被吵醒，也不要安静地以为没事。
 
 ### ⚠️ 这轮实测抓到的两个"看起来能跑但结果是错的"陷阱
 
@@ -1114,7 +1123,7 @@ SQLite 恰好返回了另一行 —— **是运气，不是设计**。修法是�
 
 **已实测：**
 
-- **497 个单元测试**全绿：分位数、模态、异常判定、冷启动、静默时段（含跨午夜）、
+- **501 个单元测试**全绿：分位数、模态、异常判定、冷启动、静默时段（含跨午夜）、
   决策抑制、规则兜底、存储幂等、冷却、dry-run 语义、连续失败时间窗口、断言 DSL 双侧覆盖、
   日志模板提取、窗口切分、静默失败防护、基线污染防护、`--override` 路径校验、
   企业微信 `errcode` 校验、密钥文件与 BOM 容错、控制台编码健壮性、

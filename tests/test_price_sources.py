@@ -170,6 +170,114 @@ class TestSanityBounds(unittest.TestCase):
             self.assertIn("需要登录", point.error)
 
 
+class MockJdHandler(BaseHTTPRequestHandler):
+    """模拟京东的行为：**不带 Cookie 就给掩码价，带了才给真价。**
+
+    这是本轮实测到的真实行为：
+      * 未登录 → `"price":"4??00"` + `"priceLoginText":"登录查看价格"`
+      * 已登录 → 真实价格
+    用这个 mock 把整条链路串起来验证，就不需要真的登录一次京东。
+    """
+
+    def do_GET(self):  # noqa: N802
+        logged_in = "pt_key=" in (self.headers.get("Cookie") or "")
+        if logged_in:
+            body = ('<html><body><div class="p-price">¥32,999.00</div>'
+                    '<script>window.x={"price":"32999.00"}</script></body></html>')
+        else:
+            body = ('<html><body>'
+                    '<script>window.pageConfig={"priceFloor":{"demoteEnable":false,'
+                    '"price":"4??00","type":"251"},'
+                    '"priceLoginText":"登录查看价格"};</script>'
+                    "</body></html>")
+        raw = body.encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(raw)))
+        self.end_headers()
+        self.wfile.write(raw)
+
+    def log_message(self, *args):  # noqa: A003
+        return
+
+
+class TestJdLikeFlowEndToEnd(unittest.TestCase):
+    """不带 Cookie → 明确报登录墙；带 Cookie → 取到价格 → 判据跑通。"""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.httpd = ThreadingHTTPServer(("127.0.0.1", 0), MockJdHandler)
+        cls.port = cls.httpd.server_address[1]
+        threading.Thread(target=cls.httpd.serve_forever, daemon=True).start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.httpd.shutdown()
+        cls.httpd.server_close()
+
+    def setUp(self):
+        shutil.rmtree(TMP, ignore_errors=True)
+        (TMP / "data").mkdir(parents=True, exist_ok=True)
+        self.cfg = {**cfg_for_tmp(), "_secrets": {}}
+
+    def tearDown(self):
+        shutil.rmtree(TMP, ignore_errors=True)
+
+    def item(self) -> dict:
+        return {
+            "name": "dgx_spark",
+            "label": "NVIDIA DGX Spark 128GB",
+            "source": "html",
+            "url": f"http://127.0.0.1:{self.port}/product",
+            # 覆盖常见几种字段形态，和 config.toml 里的默认值一致
+            "price_regex": r'"(?:p|price|jdPrice)"\s*:\s*"?([0-9][0-9,]*(?:\.[0-9]+)?)"?',
+            "cookie_env": "OPS_JD_COOKIE",
+            "min_price": 15000,
+            "max_price": 80000,
+        }
+
+    def collect(self, item: dict):
+        resolved = {**item, "headers": prices.resolve_headers(self.cfg, item)}
+        return prices.collect_item(resolved, http.ProbeConfig(timeout_ms=5000))
+
+    def test_without_cookie_reports_the_login_wall(self):
+        point = self.collect(self.item())
+        self.assertFalse(point.ok)
+        self.assertIn("登录", point.error or "")
+        # 正则先抓到了掩码里的 4，所以会同时报"低于区间"和"需要登录"——
+        # **两件事都要说**：只说下限，用户会去调正则；只说登录，他不知道 4 哪来的。
+        self.assertIn("15000", point.error or "")
+        self.assertIn("OPS_JD_COOKIE", point.error or "", "必须给出解法")
+
+    def test_with_cookie_extracts_the_real_price(self):
+        self.cfg["_secrets"] = {"OPS_JD_COOKIE": "pt_key=abc; pt_pin=me"}
+        point = self.collect(self.item())
+        self.assertTrue(point.ok, point.error)
+        self.assertEqual(point.value, 32999.0)
+
+    def test_masked_price_never_becomes_a_number(self):
+        """不带 Cookie 时页面里的 `4??00` 绝不能被当成价格。"""
+        point = self.collect(self.item())
+        self.assertIsNone(point.value)
+
+    def test_cookie_path_flows_all_the_way_into_judgment(self):
+        """带 Cookie 取到真实价格后，判据必须能正常跑出结论。"""
+        self.cfg["_secrets"] = {"OPS_JD_COOKIE": "pt_key=abc; pt_pin=me"}
+        point = self.collect(self.item())
+        analysis = prices.analyze_prices(
+            [point],
+            # 历史最低比现价高一点，才构成"创新低"；
+            # 相等不算新低（`value < lowest` 是严格小于）—— 这是对的
+            {"dgx_spark": prices.PriceHistory(item="dgx_spark", samples=9,
+                                              last_value=35000.0, lowest=33500.0)},
+            {"dgx_spark": prices.PriceRules(target_price=34000)},
+        )
+        kinds = sorted(a.kind for a in analysis.anomalies)
+        self.assertIn("price_below_target", kinds, "32999 低于目标价 34000，该报到价")
+        self.assertIn("price_new_low", kinds, "32999 低于历史最低 33500，该报新低")
+        self.assertEqual(analysis.metrics["ok"], 1)
+
+
 class TestLoginWallDetection(unittest.TestCase):
     """京东这类站点**必须登录才显示价格** —— 这不是"没匹配到"，是另一回事。
 

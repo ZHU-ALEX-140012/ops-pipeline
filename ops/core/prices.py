@@ -654,9 +654,18 @@ def collect_item(item_cfg: Mapping[str, Any], pcfg: http.ProbeConfig,
             return point
         problem = sanity_check(value, item_cfg, matched=raw)
         if problem:
+            # 误匹配 + 页面要登录时，**把解法和现象一起说**。
+            # 只说"低于下限"用户会去调正则；只说"需要登录"他又不知道
+            # 为什么正则会抓到 4 —— 两件事必须一起讲。
             wall = detect_login_wall(response.text)
-            extra = f"（页面同时提示**需要登录**：{wall!r}）" if wall else ""
-            point.error = f"{problem}{extra}"
+            if wall:
+                hint = ("，且**已带 Cookie**（可能已过期）" if using_cookie else
+                        f"；要自动抓就把 {cookie_env or 'Cookie'} 配好"
+                        f"（或用 tools/price_set.py 人工记价格）")
+                point.error = (f"{problem}。页面同时提示**需要登录**"
+                               f"（命中标记 {wall!r}）{hint}")
+            else:
+                point.error = problem
             return point
         point.value = value
         point.ok = True
