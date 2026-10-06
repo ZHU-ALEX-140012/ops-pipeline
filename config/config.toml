@@ -496,6 +496,35 @@ min_price = 12000
 max_price = 70000
 
 [[price_watch.items]]
+name = "ace_m1a"
+label = "阿迈奇 M1A（AI Max+ 395, 128G+2TB）"
+source = "html"
+# SKU 100282475819（用户从地址栏提供）
+url = "https://item.m.jd.com/product/100282475819.html"
+price_regex = '"(?:p|price|jdPrice)"\s*:\s*"?([0-9][0-9,]*(?:\.[0-9]+)?)"?'
+cookie_env = "OPS_JD_COOKIE"
+currency = "CNY"
+enabled = true
+# 实测（截图 2026-10）：**¥22,999**（128G+2TB），**阿迈奇京东自营旗舰店**，
+# 累计评价 100+，工作站热卖榜第 12 名，京东物流明日达。**现货。**
+# 还有"128G+0（无硬盘）"的版本 —— 适合手里已经有 SSD 的人，更便宜。
+#
+# ⚠️ 和极摩客那台（¥25,699 / 4TB）**不是同配置**：这台是 2TB。
+#    同配置粗略折算下来这台大约便宜一两千（多出的 2TB 硬盘值 ¥1000~1500）。
+#    比价要按同容量比，否则"更便宜"可能只是少了一块盘。
+#
+# 判据按它自己的价位设：
+target_price = 21500
+drop_percent = 3
+rise_percent = 3
+new_low_days = 60
+stale_hours = 48
+watch_stock = true
+stock_low_threshold = 3
+min_price = 8000
+max_price = 50000
+
+[[price_watch.items]]
 name = "gmk_evox3"
 label = "极摩客 GMKtec EVO-X3（AI Max+ 395, 128G+4TB）"
 source = "html"
