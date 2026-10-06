@@ -1053,18 +1053,38 @@ python tools\import_cookie.py
   OPS_JD_COOKIE          __jdv=76…defg
 ```
 
-如果传进去的其实是控制台那种"缺 pt_key"的 Cookie，它会**主动警告**。
+如果传进去的其实是控制台那种"缺 pt_key"的 Cookie，它会**提醒但不拦你**。
 
-`dgx_spark` 已经配好 `cookie_env = OPS_JD_COOKIE`，**导入完就能跑**：
+> ### ⚠️ 一条我自己被推翻的判断（值得记下来）
+>
+> 我一开始认为"没有 `pt_key` 就一定不行"，还把它写成了强警告。
+> **实测证明我错了**：用户导入的那串**没有 `pt_key`**（只有风控 token），
+> 京东商品页**照样返回了真实价格**。
+>
+> 也就是说，京东商品页那道闸主要是**风控校验**
+> （`wlfstk_smdl` / `sdtoken` / `shshshfpa` 这些），`pt_key` 反而不是必需的。
+>
+> **教训：过度警告和没有警告一样有害。** 它会让用户以为"白做了"而放弃 ——
+> 正确的做法是提示"先试一下，别在这里下结论"。
+
+### ✅ 实测结果
 
 ```bash
-python -m ops --task price_watch --once --no-ai --dry-run
+$ python -m ops --task price_watch --once --no-ai --dry-run
+[price_watch] got=2/2 status=ok severity=info
+  dgx_spark    ok=1  ¥40,000   ← 京东自营
+  dgx_zangqi   ok=1  ¥39,999   ← 赞奇专营店
 ```
 
-> ⚠️ **在导入成功之前，它每轮都会报"页面要求登录才能看到价格"。**
-> **那不是 bug，是它在告诉你自己现在是瞎的。** 嫌吵就先把 `enabled` 改成 `false`。
->
-> ⚠️ **Cookie 会过期**（一般几天到几周）。过期后同样会报警 —— 那是对的行为，
+**只用了那串"没有 pt_key"的 Cookie，两个商品全部抓取成功。**
+
+另外两条实测结论：
+
+* **必须用移动版地址** `item.m.jd.com/product/<sku>.html`。
+  PC 版 `item.jd.com/<sku>.html` **永远**返回 36KB 反爬页，一条都抓不到。
+* **`item.m.jd.com/<sku>.html`（少了 `/product/`）返回 404**，别用那种形式。
+
+> ⚠️ **Cookie 会过期**（一般几天到几周）。过期后采集会失败并**报警** —— 那是对的行为，
 > 宁可被吵醒，也不要安静地以为没事。
 
 ### ⚠️ 这轮实测抓到的两个"看起来能跑但结果是错的"陷阱

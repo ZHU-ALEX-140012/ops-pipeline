@@ -404,9 +404,10 @@ stale_hours = 6
 #    宁可被吵醒，也不要安静地以为没事。
 [[price_watch.items]]
 name = "dgx_spark"
-label = "NVIDIA DGX Spark 128GB"
+label = "DGX Spark（京东自营）"
 source = "html"
-# 两个在售 SKU 任选其一（另一个见下方注释）
+# 京东自营，NVIDIA 原厂 128GB/4TB。当前 ¥40,000，但**你所在区域暂无存货**。
+# 它适合当"官方基准价 + 有货信号"：自营补货或调价通常代表整个品类的风向。
 url = "https://item.m.jd.com/product/100254961843.html"
 # 默认正则覆盖常见几种字段形态；price_probe 能给出更准的
 price_regex = '"(?:p|price|jdPrice)"\s*:\s*"?([0-9][0-9,]*(?:\.[0-9]+)?)"?'
@@ -414,26 +415,83 @@ price_regex = '"(?:p|price|jdPrice)"\s*:\s*"?([0-9][0-9,]*(?:\.[0-9]+)?)"?'
 cookie_env = "OPS_JD_COOKIE"
 currency = "CNY"
 enabled = true
-# 另一个 SKU（想换就换这一行）：
-#   url = "https://item.m.jd.com/product/100296702712.html"
+# 自营那个暂时无货 —— 它更大的价值是"有货了通知我"，见 README 的库存监控一节。
 #
-# 想让"人工录入的价格"也参与（例如 Cookie 暂时不可用时手动补一条）：
-#   把 source 改回 "manual"，用 tools/price_set.py --item dgx_spark --price <价格>
-#
-# --- 判据（这几行是最该按你自己情况改的）---
-# 你的心理价位：到这个价就提醒你。京东自营现价约 ¥32,999，
-# 所以现在这个值暂时不会触发到价提醒 —— 按你说的"等看到真实价格再改"。
-target_price = 28000
-# 贵东西的百分比要调小：5% 就是 1500 块，值得知道
-drop_percent = 5
-# ⚠️ 涨价阈值单独设小 —— 这个商品正在因为内存短缺涨价，早一点知道有决策价值
-rise_percent = 5
+# --- 判据 ---
+# ⚠️ 现价 ¥40,000（2026-10 实测，比早期报道的 3 万高了不少）。
+#    ¥28,000 基本不可能到，这里改成一个**现实**的数：跌到 3 万 8 就值得看一眼。
+target_price = 38000
+# 贵东西的百分比要调小：3% 就是 1200 块，值得知道
+drop_percent = 3
+# ⚠️ 涨价阈值也调小 —— 这个品类正在因为内存短缺涨价
+#    （京东自己在商品卡上印"需要涨价 早买更安心"），早一点知道有决策价值
+rise_percent = 3
 # 贵设备的"新低"要看更长的窗口，否则一个月的正常波动都算新低
 new_low_days = 60
 # 自动抓：两天都抓不到就提醒（人工录入时才需要调成几百小时）
 stale_hours = 48
 # ⚠️ 合理性区间。**自动抓时必须设** —— 实测宽松正则会在京东页面上匹配到
-#    "price":"4??00" 里的 4，于是 ¥4 会被当成这台三万块设备的价格。
+#    "price":"4??00" 里的 4，于是 ¥4 会被当成这台几万块设备的价格。
+min_price = 15000
+max_price = 80000
+
+# ---------------------------------------------------------------- 备选渠道（同一台机器）
+#
+# ⚠️ **这几个不能直接按价格排序比。** 它们配置不同：
+#   * 华硕 Ascent GX10（下面那条）是 **128G + 1TB** —— 少 3TB 硬盘，所以便宜
+#   * 原厂那几个（自营 / 容天 / 华萨）通常是 **128G + 4TB**
+# 比价要同配置比，否则"到价提醒"提醒的是一个低配版的价格，没有意义。
+[[price_watch.items]]
+name = "dgx_asus"
+label = "华硕 Ascent GX10（128G+1TB）"
+source = "html"
+# ⚠️ **SKU 待确认 —— 现在是关着的。**
+#    我按截图读成了 10181032413616，实测返回的是京东的
+#    "商品不存在"页（11KB，标题「京东购物-商品详情」）—— 说明**数字读错了一位**。
+#    14 位 SKU 从截图里读很容易错，请从地址栏原样复制。
+#
+# 正确做法：把你在浏览器地址栏看到的**完整链接**粘到下面这行，然后 enabled 改 true
+#   url = "https://item.m.jd.com/product/<在这里粘 SKU>.html"
+url = "https://item.m.jd.com/product/10181032413616.html"
+price_regex = '"(?:p|price|jdPrice)"\s*:\s*"?([0-9][0-9,]*(?:\.[0-9]+)?)"?'
+cookie_env = "OPS_JD_COOKIE"
+currency = "CNY"
+# 等 SKU 确认后再打开 —— 开着的话每轮都会报"商品不存在"，那是噪声
+enabled = false
+# 实测（截图）：¥37,999，**仅剩 2 件**。128G+1TB 版本（另有 2TB / 8TB 定制）。
+# 店铺是"华硕迷你电脑旗舰店"，累计评价只有 12 条 —— 对一台近四万的东西，样本量偏小。
+#
+# ⚠️ 这台是 **1TB** 版，比原厂 4TB 版少 3TB 硬盘。比价要同配置比，
+#    否则"到价提醒"提醒的是一个低配版的价格。
+target_price = 36500
+drop_percent = 3
+rise_percent = 3
+new_low_days = 60
+stale_hours = 48
+# 区间按 1TB 版单独给：它是低配版，价格下界比 4TB 版更低
+min_price = 12000
+max_price = 70000
+
+[[price_watch.items]]
+name = "dgx_zangqi"
+label = "赞奇 NVIDIA DGX Spark（专营店）"
+source = "html"
+# SKU 从商品页地址栏读到：10207983445363
+# ⚠️ 必须用**移动版**地址形式 item.m.jd.com/product/<sku>.html：
+#    实测 PC 版 item.jd.com/<sku>.html 永远返回 36KB 的反爬页，一条都抓不到。
+url = "https://item.m.jd.com/product/10207983445363.html"
+price_regex = '"(?:p|price|jdPrice)"\s*:\s*"?([0-9][0-9,]*(?:\.[0-9]+)?)"?'
+cookie_env = "OPS_JD_COOKIE"
+currency = "CNY"
+enabled = true
+# 实测（2026-10，带 Cookie）：**¥39,999 抓取成功**。
+# 页面上写着"此商品暂时售完" —— 现在买不到，只能等补货。
+# 店铺是"赞奇NVIDIA产品专营店"（专营店，不是旗舰店），累计评价 10 条。
+target_price = 38000
+drop_percent = 3
+rise_percent = 3
+new_low_days = 60
+stale_hours = 48
 min_price = 15000
 max_price = 80000
 
