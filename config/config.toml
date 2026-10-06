@@ -496,6 +496,49 @@ min_price = 12000
 max_price = 70000
 
 [[price_watch.items]]
+name = "gmk_evox3"
+label = "极摩客 GMKtec EVO-X3（AI Max+ 395, 128G+4TB）"
+source = "html"
+# SKU 100286416269（用户从地址栏提供）
+url = "https://item.m.jd.com/product/100286416269.html"
+price_regex = '"(?:p|price|jdPrice)"\s*:\s*"?([0-9][0-9,]*(?:\.[0-9]+)?)"?'
+cookie_env = "OPS_JD_COOKIE"
+currency = "CNY"
+enabled = true
+# 实测（截图 2026-10）：**¥25,699**（128G+4TB），**极摩客京东自营旗舰店**，
+# 累计评价 200+，京东物流明日达。**现货。**
+#
+# ⚠️ 这是 DGX Spark 的**竞争者**，不是同一个东西。两者实测差别（StorageReview
+#    把 AMD 自家的 Ryzen AI Halo 与 DGX Spark 放在一起跑过）：
+#
+#   CPU 作业      395 更快（7-Zip 压缩快 11%、解压快 38%，LLVM 编译快 14%）
+#   AI 推理       **DGX Spark 快 2~4 倍**，prefill 重的活（GPT OSS 120B）能到 8.8 倍
+#   操作系统      395 能跑 Windows 11 或 Linux；DGX Spark 只有 DGX OS（Linux）
+#   硬盘          395 用标准 M.2 2280（能自己换到 8TB）；Spark 是 2242
+#   组网          只有 10GbE；Spark 有 200G ConnectX-7，**能多机互联堆更大的模型**
+#   内存带宽      都是 128GB；395 是 256 GB/s
+#   价格          **差一万多**（¥25,699 vs ¥37,999）
+#
+#   → **选哪个取决于你要跑什么**：跑模型推理/服务选 Spark；
+#     要一台通用机器顺便跑 AI、或者在意能跑 Windows，选 395。
+#
+#   注：上面那份评测跑的是 AMD 自家的 Halo 整机（$3,999 配 2TB）；
+#   这台极摩客是**同芯片的第三方整机**，芯片性能可参考，
+#   但机箱/散热/保修是另一家的，别把评测结论直接当成极摩客的。
+#
+# 判据按它自己的价位设：
+target_price = 24000
+drop_percent = 3
+rise_percent = 3
+new_low_days = 60
+stale_hours = 48
+watch_stock = true
+stock_low_threshold = 3
+# 区间按它的价位单独给（比 DGX Spark 低一档）
+min_price = 8000
+max_price = 50000
+
+[[price_watch.items]]
 name = "dgx_zangqi"
 label = "赞奇 NVIDIA DGX Spark（专营店）"
 source = "html"
