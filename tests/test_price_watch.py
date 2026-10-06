@@ -66,6 +66,17 @@ class TestParsePrice(unittest.TestCase):
             with self.subTest(raw=raw):
                 self.assertIsNone(prices.parse_price(raw))
 
+    def test_masked_placeholder_price_is_rejected(self):
+        """⚠️ **这条是实测换来的，防的是"凭噪声捏造一个价格"。**
+
+        京东对未登录请求返回 `"price":"4??00"` —— 真的问号字符，掩码占位价。
+        而剥掉非数字字符会把 `4??00` 变成 **400**：一个完全由噪声捏造出来的数字。
+        比"解析失败"危险得多，所以见到掩码字符一律判失败。
+        """
+        for raw in ("4??00", "3??99", "??", "12*34", "1？234"):
+            with self.subTest(raw=raw):
+                self.assertIsNone(prices.parse_price(raw), f"{raw!r} 是掩码，不是价格")
+
     def test_extract_path_nested_and_indexed(self):
         payload = {"data": {"price": 3999, "offers": [{"p": 1}, {"p": 2}]}}
         self.assertEqual(prices.extract_path(payload, "data.price"), 3999)

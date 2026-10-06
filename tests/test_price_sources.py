@@ -72,6 +72,213 @@ def cfg_for_tmp() -> dict:
     return {"project": {"root": str(TMP)}}
 
 
+LOGIN_PAGE = """<!doctype html><html><head><title>某商品</title></head><body>
+<div class="p-price"></div>
+<script>window.pageConfig={"priceFloor":{"priceLoginText":"登录查看价格"},"urgeLogin":true};</script>
+</body></html>"""
+
+
+class LoginWallHandler(PageHandler):
+    def do_GET(self):  # noqa: N802
+        if self.path.startswith("/login"):
+            body = LOGIN_PAGE.encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        if self.path.startswith("/echo"):
+            # 把收到的 Cookie 回显出来，用来验证凭据真的被带上了
+            body = json.dumps({"cookie": self.headers.get("Cookie", ""),
+                               "data": {"price": 32999}}).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        super().do_GET()
+
+
+class TestSanityBounds(unittest.TestCase):
+    """⚠️ **这组测试是实测换来的，防的是"静默的错误数据"。**
+
+    真实经过：一个看起来无害的正则 `"price"\\s*:\\s*"?([0-9][0-9,]*)"?`
+    在京东商品页上匹配到了 `"price":4` —— 系统把 **¥4** 记成了
+    DGX Spark（三万块的东西）的价格，下一步就会报"价格暴跌 99.99%"。
+
+    **比抓不到更糟的是抓到错的**：抓不到会报警、有人会去看；
+    抓到错的会安静地产生假历史、假新低、假跌幅，污染整个价格库。
+    """
+
+    def test_bounds_reject_a_tiny_wrong_match(self):
+        problem = prices.sanity_check(4.0, {"min_price": 10000, "max_price": 100000},
+                                      matched="4")
+        self.assertIsNotNone(problem)
+        self.assertIn("低于合理性下限", problem or "")
+        self.assertIn("无关的数字", problem or "")
+
+    def test_bounds_reject_an_absurdly_large_match(self):
+        problem = prices.sanity_check(9999999.0, {"min_price": 10000, "max_price": 100000})
+        self.assertIsNotNone(problem)
+        self.assertIn("高于合理性上限", problem or "")
+
+    def test_value_inside_bounds_passes(self):
+        self.assertIsNone(prices.sanity_check(32999.0, {"min_price": 10000, "max_price": 100000}))
+
+    def test_bounds_are_inclusive(self):
+        self.assertIsNone(prices.sanity_check(10000.0, {"min_price": 10000}))
+        self.assertIsNone(prices.sanity_check(100000.0, {"max_price": 100000}))
+
+    def test_no_bounds_means_no_check(self):
+        """没配区间就不检查 —— 但也因此没有保护，README 里说了这是必需的。"""
+        self.assertIsNone(prices.sanity_check(4.0, {}))
+
+    def test_bounds_survive_the_config_layer(self):
+        rules = prices.PriceRules.from_config({"min_price": 10000, "max_price": 100000})
+        self.assertEqual(rules.min_price, 10000.0)
+        self.assertEqual(rules.max_price, 100000.0)
+
+    def test_collection_rejects_the_wrong_match_end_to_end(self):
+        """端到端：那个真实误匹配必须在采集层就被拦下，绝不能进价格库。"""
+        server = ThreadingHTTPServer(("127.0.0.1", 0), LoginWallHandler)
+        port = server.server_address[1]
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            point = prices.collect_item(
+                {"name": "dgx", "url": f"http://127.0.0.1:{port}/echo",
+                 "price_path": "data.price", "min_price": 100000, "max_price": 200000},
+                http.ProbeConfig(timeout_ms=5000))
+            self.assertFalse(point.ok, "32999 低于下限 100000，必须被拦下")
+            self.assertIn("合理性下限", point.error or "")
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    def test_wrong_match_error_mentions_the_login_wall_when_present(self):
+        """误匹配 + 页面要登录 → 报错要把"要登录"这个真正的原因带上，否则排查方向是错的。"""
+        point = prices.collect_item(
+            {"name": "dgx", "url": "https://item.m.jd.com/product/100254961843.html",
+             "price_regex": r'"price"\s*:\s*"?([0-9][0-9,]*\.?[0-9]*)"?',
+             "min_price": 10000, "max_price": 100000},
+            http.ProbeConfig(timeout_ms=25000))
+        # 这个请求依赖外网；拿不到网络就跳过（不把网络当测试前提）
+        if point.ok and point.value and point.value >= 10000:
+            self.skipTest("这次没匹配到那个无关数字，跳过")
+        if point.error and "登录" in point.error:
+            self.assertIn("需要登录", point.error)
+
+
+class TestLoginWallDetection(unittest.TestCase):
+    """京东这类站点**必须登录才显示价格** —— 这不是"没匹配到"，是另一回事。
+
+    实测：item.m.jd.com 可达、标题能拿到，但价格字段是
+    `"priceLoginText":"登录查看价格"`。把这两件事混成一个含糊的报错，
+    会让人往完全错误的方向排查（去查正则、去查页面改版），
+    而真正该做的是"配一个 Cookie"。
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.httpd = ThreadingHTTPServer(("127.0.0.1", 0), LoginWallHandler)
+        cls.port = cls.httpd.server_address[1]
+        threading.Thread(target=cls.httpd.serve_forever, daemon=True).start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.httpd.shutdown()
+        cls.httpd.server_close()
+
+    def url(self, path: str) -> str:
+        return f"http://127.0.0.1:{self.port}{path}"
+
+    def test_detects_jd_login_markers(self):
+        for marker in ("登录查看价格", "priceLoginText", "urgeLogin", "passport.jd.com"):
+            with self.subTest(marker=marker):
+                self.assertEqual(prices.detect_login_wall(f"...{marker}..."), marker)
+
+    def test_normal_page_has_no_wall(self):
+        self.assertIsNone(prices.detect_login_wall("<html>¥28,999</html>"))
+
+    def test_login_wall_produces_an_actionable_error(self):
+        point = prices.collect_item(
+            {"name": "dgx", "url": self.url("/login"), "price_regex": r'"p":"([\d.]+)"'},
+            http.ProbeConfig(timeout_ms=5000))
+        self.assertFalse(point.ok)
+        self.assertIn("登录", point.error or "")
+        self.assertIn("Cookie", point.error or "")
+        self.assertIn("price_set.py", point.error or "", "必须给出可行的替代方案")
+
+    def test_error_differs_when_cookie_was_already_sent(self):
+        """带了 Cookie 还是被要求登录 → 提示应该是"可能过期了"，而不是"去配置一个"。"""
+        point = prices.collect_item(
+            {"name": "dgx", "url": self.url("/login"), "price_regex": r'"p":"([\d.]+)"',
+             "headers": {"Cookie": "pt_key=old"}},
+            http.ProbeConfig(timeout_ms=5000))
+        self.assertFalse(point.ok)
+        self.assertIn("过期", point.error or "")
+
+
+class TestCredentialResolution(unittest.TestCase):
+    """凭据只从环境变量 / secrets.local.toml 读，**绝不写进 config.toml**。"""
+
+    def setUp(self):
+        shutil.rmtree(TMP, ignore_errors=True)
+        (TMP / "data").mkdir(parents=True, exist_ok=True)
+        self.cfg = {**cfg_for_tmp(), "_secrets": {}}
+
+    def tearDown(self):
+        shutil.rmtree(TMP, ignore_errors=True)
+        os.environ.pop("OPS_TEST_COOKIE", None)
+
+    def test_no_cookie_env_means_no_cookie_header(self):
+        headers = prices.resolve_headers(self.cfg, {"name": "x"})
+        self.assertNotIn("Cookie", headers)
+
+    def test_cookie_read_from_secrets_file(self):
+        self.cfg["_secrets"] = {"OPS_TEST_COOKIE": "pt_key=abc; pt_pin=me"}
+        headers = prices.resolve_headers(self.cfg, {"name": "x", "cookie_env": "OPS_TEST_COOKIE"})
+        self.assertEqual(headers["Cookie"], "pt_key=abc; pt_pin=me")
+
+    def test_env_var_wins_over_secrets_file(self):
+        os.environ["OPS_TEST_COOKIE"] = "from-env"
+        self.cfg["_secrets"] = {"OPS_TEST_COOKIE": "from-file"}
+        headers = prices.resolve_headers(self.cfg, {"name": "x", "cookie_env": "OPS_TEST_COOKIE"})
+        self.assertEqual(headers["Cookie"], "from-env")
+
+    def test_extra_headers_are_preserved(self):
+        self.cfg["_secrets"] = {"OPS_TEST_COOKIE": "c"}
+        headers = prices.resolve_headers(
+            self.cfg, {"name": "x", "cookie_env": "OPS_TEST_COOKIE",
+                       "headers": {"Referer": "https://item.jd.com/"}})
+        self.assertEqual(headers["Referer"], "https://item.jd.com/")
+        self.assertEqual(headers["Cookie"], "c")
+
+    def test_cookie_missing_falls_back_to_no_header(self):
+        """配了 cookie_env 但值拿不到 → 就是没有 Cookie，**报错要说清**，不能假装有。"""
+        headers = prices.resolve_headers(self.cfg, {"name": "x", "cookie_env": "OPS_NOT_SET"})
+        self.assertNotIn("Cookie", headers)
+
+    def test_credentials_reach_the_request(self):
+        """端到端：解析出来的 Cookie 必须真的出现在 HTTP 请求里。"""
+        server = ThreadingHTTPServer(("127.0.0.1", 0), LoginWallHandler)
+        port = server.server_address[1]
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            self.cfg["_secrets"] = {"OPS_TEST_COOKIE": "pt_key=abc"}
+            item = {"name": "dgx", "url": f"http://127.0.0.1:{port}/echo",
+                    "cookie_env": "OPS_TEST_COOKIE", "price_path": "data.price",
+                    "headers": prices.resolve_headers(
+                        self.cfg, {"cookie_env": "OPS_TEST_COOKIE"})}
+            point = prices.collect_item(item, http.ProbeConfig(timeout_ms=5000))
+            self.assertTrue(point.ok, point.error)
+            self.assertEqual(point.value, 32999.0)
+        finally:
+            server.shutdown()
+            server.server_close()
+
+
 class TestPageRegexCollection(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

@@ -99,6 +99,52 @@ def report_style() -> dict[str, Any]:
     return {"value_format": value_cell, "baseline_columns": columns()}
 
 
+# 页面里出现这些，说明"不是没爬到价格，是**站点要求登录**"。
+#
+# 实测：京东移动版商品页（item.m.jd.com/product/<sku>.html）**可达**，
+# 标题也能拿到，但价格字段是 `"priceLoginText":"登录查看价格"`。
+# 把这种情形和"页面改版了""正则写错了"混成一个"没匹配到"，
+# 会让人往完全错误的方向排查 —— 所以单独识别、单独报。
+LOGIN_WALL_MARKERS = (
+    "登录查看价格",
+    "priceLoginText",
+    "urgeLogin",
+    "请先登录",
+    "passport.jd.com",
+    "login.jd.com",
+)
+
+
+def detect_login_wall(text: str) -> str | None:
+    """页面看起来要求登录才能看价格吗？返回命中的标记（用于报错信息）。"""
+    for marker in LOGIN_WALL_MARKERS:
+        if marker in text:
+            return marker
+    return None
+
+
+def resolve_headers(cfg: dict[str, Any], item_cfg: Mapping[str, Any]) -> dict[str, str]:
+    """把配置里的 `cookie_env` 解析成真正的 Cookie 头。
+
+    **凭据只从环境变量 / `config/secrets.local.toml` 读，绝不写进 config.toml** ——
+    和项目里其它凭据（企业微信 secret、邮箱授权码）走同一套机制。
+
+    为什么需要它：京东这类站点**必须登录才显示价格**，
+    而登录态只能靠 Cookie 带过去。代价也说清楚：
+    Cookie 会过期（过期后采集会失败并报警 —— 那是**对**的行为，
+    因为那意味着"你的监控瞎了"），而且它是一份凭据。
+    """
+    from . import config as cfgmod
+
+    headers = dict(item_cfg.get("headers") or {})
+    cookie_env = item_cfg.get("cookie_env")
+    if cookie_env:
+        cookie = cfgmod.resolve_secret(cfg, str(cookie_env))
+        if cookie:
+            headers["Cookie"] = cookie
+    return headers
+
+
 # ---------------------------------------------------------------- 人工录入的价格
 #
 # 有些商品**没有可自动抓的源**：官方店封机器人、电商返回反爬页、
@@ -174,19 +220,33 @@ def extract_path(payload: Any, path: str | None) -> Any:
     return node
 
 
+# 掩码字符：出现它们说明这个"价格"是占位符，不是数字。
+#
+# 实测：京东对**未登录**请求返回的是 `"price":"4??00"`（真的问号字符，0x3F）——
+# 那是掩码占位价，用来防爬。而 `parse_price` 会把 `?` 当噪声剥掉，
+# 于是 **"4??00" 被凭空解析成 400**：一个完全由噪声捏造出来的数字。
+# 这比"解析失败"危险得多，所以见到掩码字符一律判为**解析失败**。
+MASK_CHARS = "?*＊？×"
+
+
 def parse_price(raw: Any) -> float | None:
     """把各种形态的价格转成数字。
 
     实测会遇到：`3999`、`"3999"`、`"¥3,999.00"`、`"3999元"`、`"￥ 3 999"`。
     解析不出来就返回 **None**（而不是 0 或猜一个值）——
     0 会被下游当成"价格暴跌到 0"，那是最坏的一种错误。
+
+    ⚠️ 带掩码字符（`4??00`）的一律返回 None，见 `MASK_CHARS` 的说明。
     """
     if raw is None or isinstance(raw, bool):
         return None
     if isinstance(raw, (int, float)):
         value = float(raw)
         return value if value > 0 else None
-    text = _PRICE_NOISE.sub("", str(raw).replace("，", ",").replace("　", " "))
+    text = str(raw)
+    if any(char in text for char in MASK_CHARS):
+        return None
+    text = _PRICE_NOISE.sub("", text.replace("，", ",").replace("　", " "))
     if not text or text in {"-", ".", "-."}:
         return None
     try:
@@ -279,6 +339,9 @@ class PriceRules:
     # 到价是"我要的东西到了"，可以调得更响一点；默认与其它一致
     target_severity: str = "notice"
     other_severity: str = "notice"
+    # ⚠️ 合理性区间。**这不是可选项，是必需的守卫**（见 collect_item 里的说明）
+    min_price: float | None = None
+    max_price: float | None = None
 
     @classmethod
     def from_config(cls, raw: Mapping[str, Any] | None) -> PriceRules:
@@ -305,7 +368,45 @@ class PriceRules:
             stale_hours=float(number("stale_hours", 6.0) or 6.0),
             target_severity=str(raw.get("target_severity", "notice")),
             other_severity=str(raw.get("other_severity", "notice")),
+            min_price=number("min_price", None),
+            max_price=number("max_price", None),
         )
+
+
+def sanity_check(value: float, item_cfg: Mapping[str, Any],
+                 matched: Any = None) -> str | None:
+    """合理性区间守卫。**返回问题描述，或在区间内返回 None。**
+
+    ## 为什么这**不是**可选项
+
+    实测：一个看起来无害的正则 `"price"\\s*:\\s*"?([0-9][0-9,]*)"?` 在京东商品页上
+    匹配到了 `"price":4` —— 于是系统把 **¥4** 记成了 DGX Spark（三万块的东西）的价格，
+    下一步就会报"价格暴跌 99.99%"。
+
+    **比抓不到更糟的是抓到错的**：抓不到会报警、会有人去看；
+    抓到错的会安静地产生假历史、假新低、假跌幅，把整个价格库污染掉。
+
+    所以商品必须声明"它大概多少钱"：
+        min_price = 10000
+        max_price = 100000
+    区间外的值一律当**解析失败**处理，而不是当价格。
+    """
+    low = item_cfg.get("min_price")
+    high = item_cfg.get("max_price")
+    if low is None and high is None:
+        return None
+    try:
+        low_v = float(low) if low is not None and low != "" else None
+        high_v = float(high) if high is not None and high != "" else None
+    except (TypeError, ValueError):
+        return None
+    if low_v is not None and value < low_v:
+        return (f"匹配到 {matched!r} → {value}，低于合理性下限 {low_v} —— "
+                f"大概率是匹配到了页面上无关的数字（不是这个商品的价格）")
+    if high_v is not None and value > high_v:
+        return (f"匹配到 {matched!r} → {value}，高于合理性上限 {high_v} —— "
+                f"同上，先检查正则是不是匹配错了地方")
+    return None
 
 
 # ---------------------------------------------------------------- 判据
@@ -513,11 +614,16 @@ def collect_item(item_cfg: Mapping[str, Any], pcfg: http.ProbeConfig,
         if not pattern:
             point.error = "source=html 但没有配 price_regex"
             return point
+        cookie_env = item_cfg.get("cookie_env")
+        headers = dict(item_cfg.get("headers") or {})
+        # 凭据已经由任务层解析好并合进 headers（见 resolve_headers 与 price_watch.run）——
+        # `collect_item` 不碰配置与密钥，保持可纯测试。
+        using_cookie = "Cookie" in headers
         response = http.fetch_text(
             str(item_cfg.get("method") or "GET").upper(), url,
             timeout_ms=int(item_cfg.get("timeout_ms") or pcfg.timeout_ms),
             max_bytes=int(item_cfg.get("max_bytes") or 400_000),
-            extra_headers=item_cfg.get("headers"),
+            extra_headers=headers,
         )
         if not response.ok:
             point.error = response.error or f"HTTP {response.status}"
@@ -531,12 +637,26 @@ def collect_item(item_cfg: Mapping[str, Any], pcfg: http.ProbeConfig,
             point.error = str(exc)
             return point
         if raw is None:
+            # 先分辨"要登录"和"真的没匹配到" —— 这两件事的排查方向完全相反
+            wall = detect_login_wall(response.text)
+            if wall:
+                hint = (f"，且**已带 Cookie**（可能已过期，请重新取一份）" if using_cookie else
+                        f"。请把 {cookie_env or 'Cookie'} 配到环境变量或 "
+                        f"config/secrets.local.toml，或用 tools/price_set.py 人工记价格")
+                point.error = (f"页面要求**登录**才能看到价格（命中标记 {wall!r}）{hint}")
+                return point
             point.error = (f"正则在页面里没匹配到价格（读了 {response.bytes_read} 字节）。"
                            f"页面改版或价格由 JS 渲染时会发生这种情况")
             return point
         value = parse_price(raw)
         if value is None:
             point.error = f"正则匹配到的值没法当价格解析：{raw!r}"
+            return point
+        problem = sanity_check(value, item_cfg, matched=raw)
+        if problem:
+            wall = detect_login_wall(response.text)
+            extra = f"（页面同时提示**需要登录**：{wall!r}）" if wall else ""
+            point.error = f"{problem}{extra}"
             return point
         point.value = value
         point.ok = True
@@ -571,6 +691,11 @@ def collect_item(item_cfg: Mapping[str, Any], pcfg: http.ProbeConfig,
     value = parse_price(raw)
     if value is None:
         point.error = f"取到的值没法当价格解析：{raw!r}"
+        return point
+
+    problem = sanity_check(value, item_cfg, matched=raw)
+    if problem:
+        point.error = problem
         return point
 
     point.value = value

@@ -72,12 +72,34 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--timeout", type=int, default=25000, help="毫秒")
     parser.add_argument("--test", default=None,
                         help="直接测一条正则，看它能抠出什么")
+    parser.add_argument("--cookie-env", default=None, metavar="ENV_NAME",
+                        help="从该环境变量（或 config/secrets.local.toml）取 Cookie 一起带上，"
+                             "用于需要登录才能看价格的站点")
+    parser.add_argument("--min", type=float, default=None, dest="min_price",
+                        help="合理性下限：低于它的匹配一律当无关数字")
+    parser.add_argument("--max", type=float, default=None, dest="max_price",
+                        help="合理性上限")
     parser.add_argument("--limit", type=int, default=8, help="每类最多列几个候选")
     args = parser.parse_args(argv)
 
+    headers: dict[str, str] = {}
+    if args.cookie_env:
+        from ops.core import config as cfgmod
+
+        cfg = cfgmod.load_config(str(ROOT / "config" / "config.toml"))
+        cookie = cfgmod.resolve_secret(cfg, args.cookie_env)
+        if cookie:
+            headers["Cookie"] = cookie
+            print(f"已带上 {args.cookie_env} 里的 Cookie（{len(cookie)} 字符，"
+                  f"来自 {cfgmod.secret_sources(cfg, args.cookie_env)}）")
+        else:
+            print(f"⚠️ 取不到 {args.cookie_env} —— "
+                  f"来源：{cfgmod.secret_sources(cfg, args.cookie_env)}")
+            print("   设置方法见 README「京东需要登录」一节")
+
     print(f"抓取：{args.url}")
     response = http.fetch_text("GET", args.url, timeout_ms=args.timeout,
-                               max_bytes=args.max_bytes)
+                               max_bytes=args.max_bytes, extra_headers=headers)
     if response.error:
         print(f"[FAIL] 抓不到：{response.error}")
         return 1
@@ -120,6 +142,25 @@ def main(argv: list[str] | None = None) -> int:
         print()
         print(f"  ⚠️ 页面里没有 {args.keyword!r} 字样 —— 它可能不是你要的那个商品页。")
 
+    # ---------------------------------------------------------- 登录墙
+    #
+    # 这一条被实测证明是最容易误诊的情形：京东移动版商品页**可达**、标题能拿到，
+    # 但价格在登录墙后面。不说清楚的话，人会去查正则、查页面改版 ——
+    # 而真正该做的是"配一个 Cookie"。
+    from ops.core import prices as prices_mod
+
+    wall = prices_mod.detect_login_wall(text)
+    if wall:
+        print()
+        print(f"  🔒 页面提示**需要登录**才能看到价格（命中标记 {wall!r}）。")
+        print("      这不是反爬，也不是你配置错了 —— 它就是要你登录。")
+        print("      两条路：")
+        print("        a) 配一个 Cookie（能自动抓，但 Cookie 会过期）：")
+        print("           把登录后的 Cookie 放进 config/secrets.local.toml，例如")
+        print(f'             {args.cookie_env or "OPS_JD_COOKIE"} = "pt_key=...; pt_pin=..."')
+        print("           然后用 --cookie-env 重跑本命令验证。")
+        print("        b) 用 tools/price_set.py 人工记价格（稳，5 秒）。")
+
     # ---------------------------------------------------------- 直接测正则
     if args.test:
         print()
@@ -133,11 +174,29 @@ def main(argv: list[str] | None = None) -> int:
         if not matches:
             print("  没有匹配。页面改版、或价格由 JS 渲染时会发生这种情况。")
             return 1
+        from ops.core import prices as sanity_mod
+
         for match in matches[:args.limit]:
-            print(f"  匹配：{match!r}")
+            value = sanity_mod.parse_price(match)
+            flag = ""
+            if value is not None:
+                problem = sanity_mod.sanity_check(
+                    value, {"min_price": args.min_price, "max_price": args.max_price},
+                    matched=match)
+                flag = f"   ⚠️ {problem}" if problem else "   ✓ 在合理性区间内"
+            print(f"  匹配：{match!r}{flag}")
+        if args.min_price is None and args.max_price is None:
+            print()
+            print("  ⚠️ 没有给 --min/--max：**强烈建议给**。")
+            print("     实测过：宽松正则会在京东页面上匹配到 \"price\":4，")
+            print("     于是 ¥4 会被当成三万块商品的价格。加 --min 10000 就能拦住。")
         print()
         print("  配置写法：")
         print(f'    price_regex = \'{args.test.replace(chr(92), chr(92) * 2)}\'')
+        if args.min_price is not None:
+            print(f"    min_price = {args.min_price:g}")
+        if args.max_price is not None:
+            print(f"    max_price = {args.max_price:g}")
         return 0
 
     # ---------------------------------------------------------- 列候选
