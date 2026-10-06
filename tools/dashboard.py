@@ -26,6 +26,7 @@ from __future__ import annotations
 import argparse
 import html
 import json
+import re
 import sqlite3
 import sys
 from datetime import datetime, timedelta, timezone
@@ -46,6 +47,46 @@ HOST = "127.0.0.1"
 
 def _iso(dt: datetime) -> str:
     return dt.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def _candidates(cfg: dict[str, Any], conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    """价格监控里的候选商品：最新价格 + 最新库存，按价格排序。
+
+    **为什么单独做这一块**：`price_watch` 盯的往往是一组"同一类东西的不同选择"
+    （同一台设备的不同渠道、或互相竞争的机型）。散落在各轮 run 里根本看不出来，
+    摆成一张按价格排序的表才有用 —— 这正是"我该买哪个"需要的那个视图。
+    """
+    items = [i for i in (cfg.get("price_watch") or {}).get("items") or []
+             if i.get("enabled", True)]
+    out: list[dict[str, Any]] = []
+    for item in items:
+        name = str(item.get("name") or "")
+        if not name:
+            continue
+        price_row = conn.execute(
+            "SELECT value_num, ts FROM sample WHERE target=? AND metric='price' "
+            "AND ok=1 AND value_num IS NOT NULL ORDER BY ts DESC, rowid DESC LIMIT 1",
+            (name,),
+        ).fetchone()
+        stock_row = conn.execute(
+            "SELECT value_text, value_num FROM sample WHERE target=? AND metric='stock' "
+            "ORDER BY ts DESC, rowid DESC LIMIT 1",
+            (name,),
+        ).fetchone()
+        out.append({
+            "item": name,
+            "label": str(item.get("label") or name),
+            "price": float(price_row["value_num"]) if price_row else None,
+            "currency": str(item.get("currency") or "CNY"),
+            "as_of": str(price_row["ts"]) if price_row else None,
+            "stock": str(stock_row["value_text"]) if stock_row else None,
+            "buyable": (bool(float(stock_row["value_num"]) >= 0.5)
+                        if stock_row and stock_row["value_num"] is not None else None),
+            "url": str(item.get("url") or ""),
+        })
+    # 有价格的排前面、按价格升序；没价格的沉底
+    out.sort(key=lambda c: (c["price"] is None, c["price"] or 0))
+    return out
 
 
 def collect_summary(cfg: dict[str, Any], *, hours: int = 24) -> dict[str, Any]:
@@ -71,6 +112,7 @@ def collect_summary(cfg: dict[str, Any], *, hours: int = 24) -> dict[str, Any]:
     conn.row_factory = sqlite3.Row
     try:
         out["blocks"]["tasks"] = _tasks(conn, cfg, now)
+        out["blocks"]["candidates"] = _candidates(cfg, conn)
         out["blocks"]["unresolved"] = store.unresolved_alerts_all(conn)
         out["blocks"]["alerts"] = store.alerts_since(conn, hours=hours)
         out["blocks"]["runs"] = _recent_runs(conn, since)
@@ -176,6 +218,17 @@ def _fmt_pct(value: Any) -> str:
     return "n/a" if value is None else f"{value * 100:.1f}%"
 
 
+def _fmt_price(value: Any, currency: str = "CNY") -> str:
+    if value is None:
+        return "—"
+    try:
+        from ops.core.prices import format_price
+
+        return format_price(float(value), currency)
+    except Exception:  # noqa: BLE001 - 格式化失败不该让整块崩掉
+        return f"{value:,.0f}"
+
+
 def _ago(minutes: float | None) -> str:
     if minutes is None:
         return "未知"
@@ -240,7 +293,37 @@ def render_html(summary: dict[str, Any]) -> str:
 
     add("<div class='grid'>")
 
-    # ---------------------------------------------------------- 需要你注意的事（放第一）
+    # ---------------------------------------------------------- 候选对比（放前面）
+    #
+    # 这一块回答的是"我该买哪个" —— 对正在挑东西的人来说，
+    # 它比"任务健康度""token 消耗"重要得多，所以排在前面。
+    candidates = blocks.get("candidates") or []
+    if candidates:
+        cheapest = next((c["price"] for c in candidates if c["price"]), None)
+        add("<div class='card full'><h2>候选对比</h2><table>")
+        add("<tr><th>价格</th><th>相对最低</th><th>库存</th><th>商品</th></tr>")
+        for candidate in candidates:
+            price = candidate.get("price")
+            shown = _fmt_price(price, candidate.get("currency"))
+            if price and cheapest:
+                delta = price - cheapest
+                cls = "ok" if delta == 0 else ""
+                diff = "最低" if delta == 0 else f"+{_fmt_price(delta, candidate.get('currency'))}"
+            else:
+                cls, diff = "", "—"
+            stock = candidate.get("stock") or "未解析"
+            stock_cls = "ok" if candidate.get("buyable") else "bad"
+            clean_stock = html.escape(re.sub(r"^\d+\s*", "", str(stock)).strip() or "—")
+            label = html.escape(str(candidate.get("label") or candidate["item"]))
+            add(f"<tr><td class='mono {cls}'>{shown}</td><td class='muted'>{diff}</td>"
+                f"<td class='{stock_cls}'>{clean_stock}</td><td>{label}</td></tr>")
+        add("</table>")
+        add("<p class='muted' style='margin-top:10px'>"
+            "⚠️ 不同商品**配置可能不同**（硬盘容量、品牌、自营/第三方）——"
+            "「相对最低」只是价格差，不代表同配置。买之前看清规格。</p>")
+        add("</div>")
+
+    # ---------------------------------------------------------- 需要你注意的事
     unresolved = blocks.get("unresolved") or []
     problems = ((blocks.get("doctor") or {}).get("problems")) or []
     add("<div class='card full'><h2>需要你注意的事</h2>")
