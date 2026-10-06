@@ -19,6 +19,34 @@ DEFAULT_CONFIG = PROJECT_ROOT / "config" / "config.toml"
 # 本地密钥文件（与配置文件同目录，已在 .gitignore 中）
 SECRETS_FILENAME = "secrets.local.toml"
 
+# 本地覆盖配置：同样与主配置同目录，同样不进版本库。
+#
+# **为什么需要它**：主配置 `config.toml` 是要跟着仓库走的，里面只能放
+# 通用示例；而每个人真正要盯的商品、要探的地址、自己的阈值，都是**私人内容**。
+# 把私人内容写进主配置，一开源就等于公开了（例如"我正在比价买什么、预算是多少"）。
+# 所以：主配置放示例，`config.local.toml` 放自己的，后者覆盖前者。
+LOCAL_CONFIG_FILENAME = "config.local.toml"
+
+
+def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+    """把 override 叠到 base 上，返回新字典（不改动入参）。
+
+    **列表整体替换，不做拼接。** 这一条是刻意的：
+    `[[price_watch.items]]` 是"要盯的东西的清单"。如果本地清单会和公共示例
+    拼在一起，用户就只能"往上加"，没法**换掉**仓库里的示例 ——
+    而"示例不要出现在我的运行里"恰恰是最常见的要求。
+
+    字典按键逐层合并（这样本地只改一个阈值，不用把整个块抄一遍）。
+    """
+    out = dict(base)
+    for key, value in override.items():
+        if isinstance(value, dict) and isinstance(out.get(key), dict):
+            out[key] = _deep_merge(out[key], value)
+        else:
+            # 列表、标量一律整体替换 —— 见上面的说明
+            out[key] = value
+    return out
+
 
 class ConfigError(RuntimeError):
     """配置缺失或非法。"""
@@ -45,6 +73,18 @@ def load_config(path: str | Path | None = None) -> dict[str, Any]:
         cfg = _read_toml(cfg_path)
     except tomllib.TOMLDecodeError as exc:
         raise ConfigError(f"配置文件不是合法 TOML：{cfg_path}\n{exc}") from exc
+
+    # 本地覆盖：同目录下的 config.local.toml（不进版本库）。
+    # 私人配置放这里，主配置就能安心保持"通用示例"的状态。
+    local_path = cfg_path.with_name(LOCAL_CONFIG_FILENAME)
+    if local_path.is_file():
+        try:
+            cfg = _deep_merge(cfg, _read_toml(local_path))
+        except tomllib.TOMLDecodeError as exc:
+            raise ConfigError(
+                f"本地覆盖配置不是合法 TOML：{local_path}\n{exc}"
+            ) from exc
+        cfg["_local_config"] = str(local_path)
 
     project = cfg.get("project") or {}
     root = str(project.get("root") or "").strip()

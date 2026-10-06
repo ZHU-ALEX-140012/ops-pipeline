@@ -54,7 +54,7 @@
 | 本机环境：Python 3.12.10、git 2.55.0、node 已装 | 实测 | 无需新增依赖环境 |
 | ⚠️ 无人值守时**权限策略**必须预先放开：当前文件策略为 workspace-write，批准策略为 ask，**没有应答者时请求会 fail-closed** | 本会话运行时上下文 | 见 §12 风险 R1，这是最大的落地障碍 |
 
-> 实测记录：`dsh headless --help` 首次运行会在 `C:\Users\36494\.dsh\profiles\headless` 初始化 profile 目录（DSH 自身的 profile 机制）。
+> 实测记录：`dsh headless --help` 首次运行会在 `C:\Users\<用户名>\.dsh\profiles\headless` 初始化 profile 目录（DSH 自身的 profile 机制）。
 
 ---
 
@@ -510,7 +510,7 @@ R1 在架构上这样落地：AI 桥接把 run.json 内容写进提示词（AI �
 
 * **AI 判断层已能在受限沙箱内跑通（附录 C）** —— 早期记录如下，其根因是环境变量继承，
   不是"权限不够"：`dsh --profile headless` 的首次运行会在
-  `C:\Users\36494\.dsh\profiles\headless` 初始化 profile，该写入在工作区外，
+  `C:\Users\<用户名>\.dsh\profiles\headless` 初始化 profile，该写入在工作区外，
   被当前沙箱拦截。需要在普通终端里跑一次 `dsh --profile headless "hi"` 让 profile 落地，
   之后才能验证提示词产出与 `verdict.json` 契约。
 * **企业微信真实投递**未验证（没有 webhook，全程走 dry-run）。
@@ -612,7 +612,7 @@ R1 在架构上这样落地：AI 桥接把 run.json 内容写进提示词（AI �
 
 | 继承来的变量 | 实测值 | 后果 |
 |---|---|---|
-| `DSH_HOME` | `C:\Users\36494\.dsh` | profile 被写到工作区之外，必然被沙箱拦 |
+| `DSH_HOME` | `C:\Users\<用户名>\.dsh` | profile 被写到工作区之外，必然被沙箱拦 |
 | `DSH_PROFILE_DIR` | `...\profiles\desktop` | 已经传了 `--profile headless`，目录变量却指着 desktop |
 | `DSH_SESSION_ID` / `DSH_SHELL` / `DSH_WEB_URL` | 编排层自己的会话 | 把外层会话语义带进判断层 |
 
@@ -868,7 +868,7 @@ $ python -m ops --task log_scan --once   # 用注入异常的日志触发真实�
 [log_scan] ... status=degraded severity=alert alert=sent
 
 数据库：
-  级别: alert   通道: email   投递状态: sent   详情: → 3649496820@qq.com
+  级别: alert   通道: email   投递状态: sent   详情: → <收件人邮箱>
 ```
 
 `send_status='sent'` 是**接口确认投递成功**的标志（不是"尝试过"）。
