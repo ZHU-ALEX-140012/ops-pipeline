@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import statistics
 from datetime import datetime, timedelta, timezone
@@ -381,7 +382,26 @@ def price_history(conn: sqlite3.Connection, item: str, *, days: int = 30,
         "last_value": None, "last_at": None,
         "last_changed_value": None, "last_changed_at": None, "changes": 0,
         "minutes_since_seen": None, "minutes_since_change": None,
+        # 库存：**上一轮**（不含本轮）的状态，用来判"刚补货/刚卖完"这种跨越
+        "stock_buyable": None, "stock_label": "", "stock_remaining": None,
     }
+
+    # ---------------------------------------------------------------- 库存
+    stock_sql = ("SELECT value_num, value_text FROM sample WHERE target=? AND metric='stock' "
+                 "AND ts>=?")
+    stock_params: list[Any] = [item, since]
+    if exclude_run_id:
+        stock_sql += " AND run_id<>?"
+        stock_params.append(exclude_run_id)
+    stock_sql += " ORDER BY ts DESC, rowid DESC LIMIT 1"
+    stock_row = conn.execute(stock_sql, stock_params).fetchone()
+    if stock_row is not None and stock_row["value_num"] is not None:
+        out["stock_buyable"] = bool(float(stock_row["value_num"]) >= 0.5)
+        text = str(stock_row["value_text"] or "")
+        out["stock_label"] = text
+        match = re.search(r"仅剩 (\d+) 件", text)
+        if match:
+            out["stock_remaining"] = int(match.group(1))
     if not rows:
         return out
 

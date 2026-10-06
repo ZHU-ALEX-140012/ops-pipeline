@@ -27,6 +27,7 @@ def render_run_markdown(
     # "值怎么显示"和"基线表有哪些列"，而不用改这个通用渲染器。
     value_format: Callable[[dict[str, Any]], str] | None = None,
     baseline_columns: list[tuple[str, Callable[[dict[str, Any]], str]]] | None = None,
+    stock_columns: list[tuple[str, Callable[[dict[str, Any]], str]]] | None = None,
 ) -> str:
     metrics = analysis.get("metrics") or {}
     lines: list[str] = [
@@ -97,14 +98,20 @@ def render_run_markdown(
 
     baseline = analysis.get("baseline") or {}
     if baseline:
-        if baseline_columns:
-            heads = " | ".join(name for name, _ in baseline_columns)
+        # 库存列只在**真的解析到库存**时才拼上去 —— 没开库存监控的商品
+        # 不该在表里占三列"未解析"
+        extra_columns = list(baseline_columns or [])
+        if stock_columns and any(
+                info.get("stock_now") or info.get("stock_prev") for info in baseline.values()):
+            extra_columns += stock_columns
+        if extra_columns:
+            heads = " | ".join(name for name, _ in extra_columns)
             lines += ["", "## 基线对照", "",
                       f"| {item_label} | 基线样本 | {heads} |",
-                      "|" + "---|" * (2 + len(baseline_columns))]
+                      "|" + "---|" * (2 + len(extra_columns))]
             for target, info in baseline.items():
                 cells = [str(target), str(info.get("samples"))]
-                cells += [_cell(info) for _, _cell in baseline_columns]
+                cells += [_cell(info) for _, _cell in extra_columns]
                 lines.append("| " + " | ".join(cells) + " |")
         else:
             lines += ["", "## 基线对照", "",
@@ -161,6 +168,7 @@ def write_run_report(
     value_suffix: str = "ms",
     value_format: Callable[[dict[str, Any]], str] | None = None,
     baseline_columns: list[tuple[str, Callable[[dict[str, Any]], str]]] | None = None,
+    stock_columns: list[tuple[str, Callable[[dict[str, Any]], str]]] | None = None,
 ) -> Path:
     path = report_path(cfg, run_id, task)
     path.write_text(
@@ -169,6 +177,7 @@ def write_run_report(
             extra_lines=extra_lines, item_label=item_label,
             value_label=value_label, value_suffix=value_suffix,
             value_format=value_format, baseline_columns=baseline_columns,
+            stock_columns=stock_columns,
         ),
         encoding="utf-8",
     )

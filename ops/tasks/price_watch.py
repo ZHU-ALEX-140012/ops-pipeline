@@ -51,6 +51,9 @@ def build_history(conn: Any, items: list[str], *, days: int = 30,
             last_changed_at=raw["last_changed_at"],
             minutes_since_seen=raw["minutes_since_seen"],
             minutes_since_change=raw["minutes_since_change"],
+            stock_buyable=raw["stock_buyable"],
+            stock_label=raw["stock_label"],
+            stock_remaining=raw["stock_remaining"],
         )
     return out
 
@@ -86,9 +89,19 @@ def run(cfg: dict[str, Any], *, dry_run: bool = False, no_ai: bool = False) -> i
         # 这样下游（判据、告警、报告、历史）完全不需要知道它是怎么来的。
         manual = prices.load_manual_prices(cfg)
         points = [prices.collect_item(item, pcfg, manual) for item in items]
-        store.insert_samples(conn, run_id, [p.to_sample() for p in points])
+        # 价格与库存各存一行样本（metric 不同），两者的历史互不干扰
+        sample_rows: list[dict[str, Any]] = []
+        for point in points:
+            sample_rows.append(point.to_sample())
+            stock_row = point.to_stock_sample()
+            if stock_row:
+                sample_rows.append(stock_row)
+        store.insert_samples(conn, run_id, sample_rows)
         got = sum(1 for p in points if p.ok)
-        log_lines.append(f"采集 {len(points)} 个商品，取到价格 {got} 个")
+        stocked = sum(1 for p in points if p.stock_buyable)
+        log_lines.append(f"采集 {len(points)} 个商品，取到价格 {got} 个"
+                         + (f"，其中有货 {stocked} 个" if any(
+                             p.stock_buyable is not None for p in points) else ""))
         if points and all(not p.ok for p in points) and manual:
             log_lines.append("提示：本轮一个价都没取到，先检查 url / price_path / price_regex 配置")
 

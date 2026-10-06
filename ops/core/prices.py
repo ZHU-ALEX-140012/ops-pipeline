@@ -94,9 +94,30 @@ def report_style() -> dict[str, Any]:
             ("上次价格", lambda info: format_price(info.get("last_value"),
                                                   info.get("currency") or "CNY")),
             ("距上次采集", lambda info: _age(info.get("minutes_since_seen"))),
+            # 库存这一列只在真的解析到库存时才出现（见下面的 stock_columns）
         ]
 
-    return {"value_format": value_cell, "baseline_columns": columns()}
+    def stock_columns() -> list[tuple[str, Any]]:
+        def clean(text: Any) -> str:
+            # 库里存的是 "34 无货"（带取值码，便于排查），
+            # 但表里只需要给人看的那个词 —— 把开头的数字码去掉。
+            return re.sub(r"^\d+\s*", "", str(text or "")).strip() or "—"
+
+        def remaining(info: Mapping[str, Any]) -> str:
+            count = info.get("stock_remaining")
+            # 无货时不显示"0 件" —— 那是京东的默认值，读起来像"马上补货"
+            if not count or not info.get("stock_now") or "无货" in str(info.get("stock_now")):
+                return "—"
+            return str(count)
+
+        return [
+            ("当前库存", lambda info: clean(info.get("stock_now"))),
+            ("上一轮库存", lambda info: clean(info.get("stock_prev"))),
+            ("剩余件数", remaining),
+        ]
+
+    return {"value_format": value_cell, "baseline_columns": columns(),
+            "stock_columns": stock_columns()}
 
 
 # 页面里出现这些，说明"不是没爬到价格，是**站点要求登录**"。
@@ -204,6 +225,87 @@ def credential_note(cfg: dict[str, Any], item_cfg: Mapping[str, Any]) -> str | N
     if len(missing) == len(parts):
         return f"还没录入登录凭据：缺少 {'、'.join(missing)}"
     return f"登录凭据不完整，缺少 {'、'.join(missing)}"
+
+
+# ---------------------------------------------------------------- 库存（京东）
+
+# 京东商品页里库存就在 `_itemInfo.stock.StockState`，而且**页面自己的 JS 写明了取值表**：
+#
+#     if (stockState === 33)                              stockName = '现货'
+#     else if (stockState === 39 || stockState === 40)     stockName = '有货'
+#     else if (stockState === 36)                          stockName = '预定'
+#     else                                                 stockName = '无货'
+#
+# 实测三个商品与浏览器里看到的完全一致：自营 34（无货）、赞奇 34（无货）、
+# 华硕 33（现货，页面显示"仅剩2件"）。
+#
+# ⚠️ 别用页面上的**文案**判断："抱歉，此商品在所选区域暂无存货" 这句
+# 在两个**有货和无货的页面里都出现**（它是静态模板），拿它当判据会全判成无货。
+STOCK_LABELS = {33: "现货", 39: "有货", 40: "有货", 36: "预定"}
+STOCK_IN_VALUES = (33, 39, 40)
+STOCK_PREORDER_VALUES = (36,)
+DEFAULT_STOCK_REGEX = r'"StockState"\s*:\s*"?(\d+)"?'
+# `rn` 是**剩余件数**（华硕那个 rn=2，页面正显示"仅剩2件"）
+DEFAULT_STOCK_REMAINING_REGEX = r'"rn"\s*:\s*(\d+)'
+
+
+def stock_label(value: int | None) -> str:
+    if value is None:
+        return "未知"
+    return STOCK_LABELS.get(int(value), "无货")
+
+
+def parse_stock(text: str, item_cfg: Mapping[str, Any]) -> dict[str, Any]:
+    """从页面文本里解析库存。返回 {state, label, remaining, buyable}。
+
+    取法可配（`stock_regex` / `stock_remaining_regex`），默认就是京东那套；
+    换站点只改配置，不改代码。
+    """
+    out: dict[str, Any] = {"state": None, "label": "未知", "remaining": None, "buyable": None}
+    if not text:
+        return out
+
+    pattern = str(item_cfg.get("stock_regex") or DEFAULT_STOCK_REGEX)
+    try:
+        match = re.search(pattern, text, re.S)
+    except re.error:
+        return out
+    if not match:
+        return out
+
+    raw = str(match.group(1) if match.groups() else match.group(0)).strip()
+    in_values = [str(v) for v in (item_cfg.get("stock_in_values") or STOCK_IN_VALUES)]
+
+    # 两种形态都支持：京东给数字码（33/34/36/39…），别的站点可能给 "true"/"in_stock"。
+    # 数字走取值表翻译成中文；非数字就直接用原文当标签。
+    try:
+        state: int | None = int(raw)
+    except (TypeError, ValueError):
+        state = None
+
+    if state is not None:
+        out["state"] = state
+        out["label"] = stock_label(state)
+        out["buyable"] = str(state) in in_values
+    else:
+        out["state"] = None
+        out["label"] = raw or "未知"
+        out["buyable"] = raw.lower() in {v.lower() for v in in_values}
+
+    remaining_pattern = item_cfg.get("stock_remaining_regex")
+    if remaining_pattern is None:
+        remaining_pattern = DEFAULT_STOCK_REMAINING_REGEX
+    if remaining_pattern:
+        try:
+            found = re.search(str(remaining_pattern), text, re.S)
+        except re.error:
+            found = None
+        if found:
+            try:
+                out["remaining"] = int(found.group(1) if found.groups() else found.group(0))
+            except (TypeError, ValueError):
+                pass
+    return out
 
 
 # ---------------------------------------------------------------- 人工录入的价格
@@ -338,7 +440,7 @@ def extract_regex(text: str, pattern: str) -> Any:
 
 @dataclass
 class PricePoint:
-    """本轮某个商品的一次价格抓取结果。"""
+    """本轮某个商品的一次抓取结果（价格 + 库存）。"""
 
     item: str
     label: str = ""
@@ -352,6 +454,11 @@ class PricePoint:
     # 人工录入时才有：你是什么时候看到的、以及备注
     recorded_at: str = ""
     note: str = ""
+    # 库存（可选；没开库存监控或页面里读不到时为 None）
+    stock_state: int | None = None
+    stock_label: str = ""
+    stock_remaining: int | None = None
+    stock_buyable: bool | None = None
 
     def to_sample(self) -> dict[str, Any]:
         # 复用 sample 表：metric 固定 price，value_num 存价格、value_text 存标签。
@@ -370,6 +477,32 @@ class PricePoint:
             "error": self.error,
         }
 
+    def to_stock_sample(self) -> dict[str, Any] | None:
+        """库存单独存一行样本（metric='stock'），这样价格与库存的历史互不干扰。
+
+        `value_num` 存 **1/0（能不能买）** 而不是京东那个数字码 ——
+        历史查询与判断层只关心"能不能买"，数字码留在 `value_text` 里备查。
+        """
+        if self.stock_buyable is None:
+            return None
+        return {
+            "target": self.item,
+            "metric": "stock",
+            "value_num": 1.0 if self.stock_buyable else 0.0,
+            # 文案与报告里保持一致；无货时不写"剩 0 件"（那是京东的默认值，读起来会误导）
+            "value_text": (f"{self.stock_state} {self.stock_label}"
+                           if self.stock_state is not None else self.stock_label)
+                          + (f"，仅剩 {self.stock_remaining} 件"
+                             if self.stock_buyable and self.stock_remaining is not None
+                             else ""),
+            "currency": self.currency,
+            "source": self.source,
+            "ok": 1,
+            "ts": self.ts,
+            "status_code": None,
+            "error": None,
+        }
+
 
 @dataclass
 class PriceHistory:
@@ -386,6 +519,10 @@ class PriceHistory:
     last_changed_at: str | None = None
     minutes_since_seen: float | None = None
     minutes_since_change: float | None = None
+    # 库存：**上一轮**（不含本轮）能不能买。用来判"刚补货 / 刚卖完"这种**跨越**。
+    stock_buyable: bool | None = None
+    stock_label: str = ""
+    stock_remaining: int | None = None
 
 
 @dataclass
@@ -403,6 +540,9 @@ class PriceRules:
     # ⚠️ 合理性区间。**这不是可选项，是必需的守卫**（见 collect_item 里的说明）
     min_price: float | None = None
     max_price: float | None = None
+    # 库存：开着就盯"补货/卖完"，并在"仅剩 N 件"时提一句
+    watch_stock: bool = False
+    stock_low_threshold: int | None = 3
 
     @classmethod
     def from_config(cls, raw: Mapping[str, Any] | None) -> PriceRules:
@@ -431,6 +571,8 @@ class PriceRules:
             other_severity=str(raw.get("other_severity", "notice")),
             min_price=number("min_price", None),
             max_price=number("max_price", None),
+            watch_stock=bool(raw.get("watch_stock", False)),
+            stock_low_threshold=whole("stock_low_threshold", 3),
         )
 
 
@@ -512,6 +654,10 @@ def analyze_prices(
             "minutes_since_seen": hist.minutes_since_seen,
             "minutes_since_change": hist.minutes_since_change,
             "currency": point.currency,
+            # 库存：`stock_now` 是本轮、`stock_prev` 是上一轮（判定"跨越"靠它）
+            "stock_now": point.stock_label or None,
+            "stock_remaining": point.stock_remaining,
+            "stock_prev": hist.stock_label or None,
         }
 
         if not point.ok or point.value is None:
@@ -600,6 +746,61 @@ def analyze_prices(
             notes.append(f"「{name}」历史样本只有 {hist.samples} 条，"
                          f"暂不判断是否创新低（冷启动）")
 
+        # ⑥ 库存：只在**状态刚变化**时提醒，不每轮重复
+        #
+        # 和"到价"同一个道理（见上面 ② 的说明）：库存是一个**状态**，
+        # 不是事件。如果"有货"每轮都报，你会天天收到同一条消息然后关掉通知 ——
+        # 而对这个商品来说，"补货了"恰恰是最值得知道的那一条。
+        #
+        # 所以判据也是**跨越**：上一轮买不到、这一轮能买 → 报；
+        # 上一轮能买、这一轮买不到 → 报；状态没变 → 只记一条说明。
+        if point.stock_buyable is not None:
+            previous = hist.stock_buyable
+            # "剩 0 件"是京东在无货时给的 rn 值 —— 读起来别扭，所以只在**有货**时提件数。
+            # 无货时说"剩 0 件"会让人以为"马上要补货"，而它只是无货。
+            if point.stock_buyable and point.stock_remaining is not None:
+                stock_note = f"{point.stock_label}，仅剩 {point.stock_remaining} 件"
+            else:
+                stock_note = point.stock_label
+            if previous is None:
+                # 第一次观测到库存：只在"现在买不到"时说一句，免得开局就打扰
+                if not point.stock_buyable:
+                    notes.append(f"「{name}」目前{stock_note}（首次观测，之后会盯补货）")
+            elif point.stock_buyable and not previous:
+                anomalies.append(judge.Anomaly(
+                    "stock_available", point.item,
+                    f"「{name}」**补货了** —— 现在{stock_note}（上一轮还买不到）",
+                    rule.other_severity,
+                ))
+            elif not point.stock_buyable and previous:
+                anomalies.append(judge.Anomaly(
+                    "stock_out", point.item,
+                    f"「{name}」**卖完了** —— 现在{stock_note}（上一轮还能买）",
+                    rule.other_severity,
+                ))
+            else:
+                notes.append(f"「{name}」库存状态未变：{stock_note}")
+
+            # 有货但快没了 —— 这不是"跨越"，但对你决定要不要立刻下单有用。
+            #
+            # ⚠️ 同样只在**刚变少**时提醒：如果"仅剩 2 件"每轮都报，你会一天收到
+            #    两次一模一样的消息然后关掉通知 —— 和"到价"是同一个毛病。
+            #    判据：上一轮的件数还不低于阈值（或没有历史），这一轮低了。
+            if (point.stock_buyable and point.stock_remaining is not None
+                    and rule.stock_low_threshold
+                    and point.stock_remaining <= rule.stock_low_threshold):
+                previous_remaining = hist.stock_remaining
+                newly_low = (previous_remaining is None
+                             or previous_remaining > rule.stock_low_threshold)
+                if newly_low:
+                    anomalies.append(judge.Anomaly(
+                        "stock_low", point.item,
+                        f"「{name}」{stock_note} —— 快没了（阈值 {rule.stock_low_threshold} 件）",
+                        rule.other_severity,
+                    ))
+                # 已经偏少且状态没变 → 不再多说一句：
+                # 上面的"库存状态未变：现货，仅剩 2 件"已经把事实说清了
+
         # 价格稳定不是异常，但值得记一笔 —— 免得看报告的人以为采集坏了
         if hist.minutes_since_change is not None and hist.minutes_since_change > 24 * 60:
             notes.append(f"「{name}」价格已 {hist.minutes_since_change / 60:.0f} 小时未变"
@@ -622,9 +823,23 @@ def analyze_prices(
 
 # ---------------------------------------------------------------- 采集（唯一有 I/O 的地方）
 
+def _attach_stock(point: PricePoint, text: str, item_cfg: Mapping[str, Any]) -> None:
+    """把页面里的库存信息挂到采集结果上。
+
+    只在这几个来源上做：JSON 接口通常没有库存字段，硬解析只会得到 None。
+    """
+    if not (item_cfg.get("watch_stock") or item_cfg.get("stock_regex")):
+        return
+    info = parse_stock(text, item_cfg)
+    point.stock_state = info["state"]
+    point.stock_label = info["label"]
+    point.stock_remaining = info["remaining"]
+    point.stock_buyable = info["buyable"]
+
+
 def collect_item(item_cfg: Mapping[str, Any], pcfg: http.ProbeConfig,
                  manual: Mapping[str, Any] | None = None) -> PricePoint:
-    """取一个商品的价格。三种来源，按配置选：
+    """取一个商品的价格（顺带解析库存）。三种来源，按配置选：
 
     | `source` | 怎么取 | 需要什么 |
     |---|---|---|
@@ -720,19 +935,22 @@ def collect_item(item_cfg: Mapping[str, Any], pcfg: http.ProbeConfig,
             return point
         problem = sanity_check(value, item_cfg, matched=raw)
         if problem:
-            # 误匹配 + 页面要登录时，**把解法和现象一起说**。
-            # 只说"低于下限"用户会去调正则；只说"需要登录"他又不知道
-            # 为什么正则会抓到 4 —— 两件事必须一起讲。
+            # 误匹配 + 页面要登录时，**把现象和解法一起说**。
+            # 只说"低于下限"，用户会去调正则；只说"需要登录"，他不知道 4 哪来的。
             wall = detect_login_wall(response.text)
             if wall:
-                hint = ("，且**已带 Cookie**（可能已过期）" if using_cookie else
-                        f"；要自动抓就把 {cookie_env or 'Cookie'} 配好"
-                        f"（或用 tools/price_set.py 人工记价格）")
+                hint = ("，且**已带 Cookie**（可能已过期，请重新取一份）" if using_cookie
+                        else f"；要自动抓就把 {cookie_env or 'Cookie'} 配好"
+                             f"（或用 tools/price_set.py 人工记价格）")
                 point.error = (f"{problem}。页面同时提示**需要登录**"
                                f"（命中标记 {wall!r}）{hint}")
             else:
                 point.error = problem
             return point
+        point.value = value
+        point.ok = True
+        _attach_stock(point, response.text, item_cfg)
+        return point
         point.value = value
         point.ok = True
         return point
