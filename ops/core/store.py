@@ -384,6 +384,8 @@ def price_history(conn: sqlite3.Connection, item: str, *, days: int = 30,
         "minutes_since_seen": None, "minutes_since_change": None,
         # 库存：**上一轮**（不含本轮）的状态，用来判"刚补货/刚卖完"这种跨越
         "stock_buyable": None, "stock_label": "", "stock_remaining": None,
+        # 上一轮记下来的心理价（判"值得下手"的跨越时必须用它）
+        "target_price": None,
     }
 
     # ---------------------------------------------------------------- 库存
@@ -402,6 +404,22 @@ def price_history(conn: sqlite3.Connection, item: str, *, days: int = 30,
         match = re.search(r"仅剩 (\d+) 件", text)
         if match:
             out["stock_remaining"] = int(match.group(1))
+
+    # ---------------------------------------------------------------- 上一轮的心理价
+    #
+    # 判"值得下手"这种跨越时必须用它，而不是本轮的目标价 ——
+    # 否则用户改一次心理价，系统就会拿新目标去算旧状态，
+    # 把"刚刚才满足"误判成"早就满足了"，于是漏掉那条最该报的信号。
+    target_sql = ("SELECT value_num FROM sample WHERE target=? AND metric='target' AND ts>=?")
+    target_params: list[Any] = [item, since]
+    if exclude_run_id:
+        target_sql += " AND run_id<>?"
+        target_params.append(exclude_run_id)
+    target_sql += " ORDER BY ts DESC, rowid DESC LIMIT 1"
+    target_row = conn.execute(target_sql, target_params).fetchone()
+    if target_row is not None and target_row["value_num"] is not None:
+        out["target_price"] = float(target_row["value_num"])
+
     if not rows:
         return out
 

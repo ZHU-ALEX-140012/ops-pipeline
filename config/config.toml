@@ -332,8 +332,15 @@ to_env = "OPS_MAIL_TO"
 timeout_ms = 8000
 # 历史回看天数（用于判断"是否创新低"）
 history_days = 30
-# 每轮都调用判断层（价格判断本来就便宜；只在需要时调用也行，改成 false）
-always_ai = false
+# 每轮都调用判断层。
+#
+# ⚠️ 这里**必须开**：判断层要回答的是"现在该不该买、买哪个"，
+#    而那是一个**跨候选的比较结论** —— 只有它每轮都看一遍全部候选才给得出来。
+#    不开的话，只有出现异常时才会有人来分析，平静的日子你就得不到建议了。
+#
+#    成本可以忽略：一次判断约几万 token，按现在便宜模型的价目就是几分钱。
+#    一天一次，一个月不到一块钱。
+always_ai = true
 # 采集间隔内的最小请求间隔，避免把对方打疼
 rate_limit_ms = 800
 
@@ -422,6 +429,9 @@ stale_hours = 6
 name = "dgx_spark"
 label = "DGX Spark（京东自营）"
 source = "html"
+# 跨候选比较用：同 platform 才能直接比价；比价必须同 spec 比
+platform = "dgx_spark"
+spec = "128G+4TB"
 # 京东自营，NVIDIA 原厂 128GB/4TB。当前 ¥40,000，但**你所在区域暂无存货**。
 # 它适合当"官方基准价 + 有货信号"：自营补货或调价通常代表整个品类的风向。
 url = "https://item.m.jd.com/product/100254961843.html"
@@ -473,6 +483,8 @@ max_price = 80000
 name = "dgx_asus"
 label = "华硕 Ascent GX10（128G+1TB）"
 source = "html"
+platform = "dgx_spark"
+spec = "128G+1TB"
 # SKU 10181652415616（用户从地址栏提供；extension_id 里也写着 "sku_id":"10181652415616"）
 # ⚠️ 我第一次按截图读成了 10181032413616 —— 错了三位，返回的是京东
 #    "商品不存在"页（11KB）。14 位数字从截图读不可靠，**从地址栏复制**。
@@ -515,6 +527,8 @@ max_price = 70000
 name = "dgx_yanx"
 label = "若想 YANX DGX Spark（128G+4TB）"
 source = "html"
+platform = "dgx_spark"
+spec = "128G+4TB"
 # SKU 10215526025796（用户从地址栏提供）
 url = "https://item.m.jd.com/product/10215526025796.html"
 price_regex = '"(?:p|price|jdPrice)"\s*:\s*"?([0-9][0-9,]*(?:\.[0-9]+)?)"?'
@@ -550,6 +564,8 @@ max_price = 80000
 name = "ace_m1a"
 label = "阿迈奇 M1A（AI Max+ 395, 128G+2TB）"
 source = "html"
+platform = "ai_max_395"
+spec = "128G+2TB"
 # SKU 100282475819（用户从地址栏提供）
 url = "https://item.m.jd.com/product/100282475819.html"
 price_regex = '"(?:p|price|jdPrice)"\s*:\s*"?([0-9][0-9,]*(?:\.[0-9]+)?)"?'
@@ -579,6 +595,8 @@ max_price = 50000
 name = "gmk_evox3"
 label = "极摩客 GMKtec EVO-X3（AI Max+ 395, 128G+4TB）"
 source = "html"
+platform = "ai_max_395"
+spec = "128G+4TB"
 # SKU 100286416269（用户从地址栏提供）
 url = "https://item.m.jd.com/product/100286416269.html"
 price_regex = '"(?:p|price|jdPrice)"\s*:\s*"?([0-9][0-9,]*(?:\.[0-9]+)?)"?'
@@ -622,6 +640,8 @@ max_price = 50000
 name = "dgx_zangqi"
 label = "赞奇 NVIDIA DGX Spark（专营店）"
 source = "html"
+platform = "dgx_spark"
+spec = "128G+4TB"
 # SKU 从商品页地址栏读到：10207983445363
 # ⚠️ 必须用**移动版**地址形式 item.m.jd.com/product/<sku>.html：
 #    实测 PC 版 item.jd.com/<sku>.html 永远返回 36KB 的反爬页，一条都抓不到。

@@ -209,6 +209,170 @@ class TestStockJudgment(unittest.TestCase):
         self.assertEqual(info["stock_remaining"], 2)
 
 
+class TestBuySignal(unittest.TestCase):
+    """⚠️ **这一组是「哪个值得买」这个功能的核心。**
+
+    "到价"和"值得下手"不是一回事，单独看哪个都不够：
+      * 到价但无货 → 买不到，白高兴
+      * 有货但没到价 → 还能再等
+    只有**两个同时成立**，"可以买了"这句话才站得住。
+
+    而且它和"到价"一样必须是**跨越**而不是**状态** ——
+    "到价且有货"会持续好几天，每轮都报就变成唠叨，用户会把通知关掉。
+    """
+
+    def test_buy_signal_when_target_hit_and_in_stock(self):
+        result = analyze([point(value=38000.0, stock_state=33, stock_label="现货",
+                                stock_buyable=True, stock_remaining=5)],
+                         {"gpu": history(last_value=40000.0, stock_buyable=True)},
+                         prices.PriceRules(target_price=39000))
+        self.assertIn("buy_signal", kinds(result))
+        detail = next(a.detail for a in result.anomalies if a.kind == "buy_signal")
+        self.assertIn("值得下手", detail)
+        self.assertIn("现货", detail)
+
+    def test_no_buy_signal_when_out_of_stock_even_if_target_hit(self):
+        """到价但无货 → **不是**可以买。说"可以买了"会让收件人白跑一趟。"""
+        result = analyze([point(value=38000.0, stock_state=34, stock_label="无货",
+                                stock_buyable=False)],
+                         {"gpu": history(last_value=40000.0, stock_buyable=False)},
+                         prices.PriceRules(target_price=39000))
+        self.assertNotIn("buy_signal", kinds(result))
+        self.assertIn("price_below_target", kinds(result))
+        detail = next(a.detail for a in result.anomalies if a.kind == "price_below_target")
+        self.assertIn("无货", detail, "到价但买不到，必须在文案里说清")
+
+    def test_no_buy_signal_when_in_stock_but_above_target(self):
+        result = analyze([point(value=40000.0, stock_state=33, stock_label="现货",
+                                stock_buyable=True)],
+                         {"gpu": history(last_value=40000.0, stock_buyable=True)},
+                         prices.PriceRules(target_price=39000))
+        self.assertNotIn("buy_signal", kinds(result))
+
+    def test_buy_signal_does_not_repeat(self):
+        """已经"到价且有货"了就不再每轮喊 —— 同一条理由。"""
+        result = analyze([point(value=38000.0, stock_state=33, stock_label="现货",
+                                stock_buyable=True)],
+                         {"gpu": history(last_value=38000.0, stock_buyable=True)},
+                         prices.PriceRules(target_price=39000))
+        self.assertNotIn("buy_signal", kinds(result))
+
+    def test_buy_signal_fires_when_it_just_restocked(self):
+        """上一轮还没货（所以买不成），这一轮补货了 —— 这是**新的一次机会**。"""
+        result = analyze([point(value=38000.0, stock_state=33, stock_label="现货",
+                                stock_buyable=True)],
+                         {"gpu": history(last_value=38000.0, stock_buyable=False)},
+                         prices.PriceRules(target_price=39000))
+        self.assertIn("buy_signal", kinds(result))
+        detail = next(a.detail for a in result.anomalies if a.kind == "buy_signal")
+        self.assertIn("上一轮还没货", detail)
+
+    def test_buy_signal_reason_mentions_the_previous_price(self):
+        result = analyze([point(value=38000.0, stock_state=33, stock_label="现货",
+                                stock_buyable=True)],
+                         {"gpu": history(last_value=41000.0, stock_buyable=True)},
+                         prices.PriceRules(target_price=39000))
+        detail = next(a.detail for a in result.anomalies if a.kind == "buy_signal")
+        self.assertIn("¥41,000", detail, "要说明上一轮多少钱，用户才知道是不是真降了")
+
+
+class TestTargetChangeIsHandled(unittest.TestCase):
+    """⚠️ **这组是实测踩到 bug 之后补的。**
+
+    判"值得下手"的跨越时，如果拿**本轮**的目标价去算**上一轮**的状态，
+    用户一改心理价就会出错：比如把目标价从 24,000 调到 26,000，
+    系统会认为"上一轮 25,699 就已经满足 26,000 了" -> **不报**，
+    而实际上这正是"刚刚才满足"的那一刻 —— **漏掉的恰好是最该报的信号。**
+
+    修法：每轮把**当时的心理价**也存一行样本，判跨越时用上一轮记下的那个。
+    """
+
+    def test_changing_the_target_can_trigger_the_signal(self):
+        result = analyze(
+            [point(value=25699.0, stock_state=33, stock_label="现货", stock_buyable=True)],
+            # 上一轮记下的心理价是 24000（当时 25699 还没到），本轮的目标价是 26000
+            {"gpu": history(last_value=25699.0, stock_buyable=True, target_price=24000.0)},
+            prices.PriceRules(target_price=26000),
+        )
+        self.assertIn("buy_signal", kinds(result),
+                      "改高目标价后，'刚刚才满足'必须报出来")
+
+    def test_explanation_uses_the_previous_target_not_the_current_one(self):
+        """解释和判断必须用**同一个**目标价，否则会说成"首次观测"这种自相矛盾的话。"""
+        result = analyze(
+            [point(value=25699.0, stock_state=33, stock_label="现货", stock_buyable=True)],
+            {"gpu": history(last_value=25699.0, stock_buyable=True, target_price=24000.0)},
+            prices.PriceRules(target_price=26000),
+        )
+        detail = next(a.detail for a in result.anomalies if a.kind == "buy_signal")
+        self.assertIn("¥24,000", detail, "要说明当时的目标价是多少")
+        self.assertNotIn("首次观测", detail, "有历史就别说成首次观测")
+
+    def test_no_signal_when_already_satisfied_under_the_previous_target(self):
+        """上一轮在**当时的目标价**下就已经满足了 -> 不重复报。"""
+        result = analyze(
+            [point(value=25699.0, stock_state=33, stock_label="现货", stock_buyable=True)],
+            {"gpu": history(last_value=25699.0, stock_buyable=True, target_price=26000.0)},
+            prices.PriceRules(target_price=26000),
+        )
+        self.assertNotIn("buy_signal", kinds(result))
+
+    def test_falls_back_to_current_target_when_no_history(self):
+        """还没记过心理价（例如刚加上这个功能）-> 退回用本轮的，不能崩。"""
+        result = analyze(
+            [point(value=38000.0, stock_state=33, stock_label="现货", stock_buyable=True)],
+            {"gpu": history(last_value=40000.0, stock_buyable=True, target_price=None)},
+            prices.PriceRules(target_price=39000),
+        )
+        self.assertIn("buy_signal", kinds(result))
+
+    def test_target_price_is_stored_as_a_sample(self):
+        """每轮都要把当时的心理价存下来 —— 不存的话上面那条修复就无从谈起。"""
+        import inspect
+
+        from ops.tasks import price_watch
+
+        source = inspect.getsource(price_watch.run)
+        self.assertIn('"metric": "target"', source)
+
+
+class TestCrossCandidateFields(unittest.TestCase):
+    """判断层要回答"买哪个"，就必须知道**哪些能比、各自的心理价是多少**。
+
+    比价必须同 `spec` 比：1TB 版比 4TB 版便宜是应该的，
+    把它说成"更划算"是误导。所以这两个标签会写进 run_doc 交给判断层。
+    """
+
+    def test_baseline_carries_target_platform_spec(self):
+        result = prices.analyze_prices(
+            [point(value=38000.0)],
+            {"gpu": history(last_value=40000.0)},
+            {"gpu": prices.PriceRules(target_price=39000, platform="dgx_spark",
+                                      spec="128G+4TB")},
+        )
+        info = result.baseline["gpu"]
+        self.assertEqual(info["target_price"], 39000)
+        self.assertEqual(info["platform"], "dgx_spark")
+        self.assertEqual(info["spec"], "128G+4TB")
+
+    def test_unset_platform_and_spec_are_none_not_empty(self):
+        result = analyze([point()], {"gpu": history()})
+        self.assertIsNone(result.baseline["gpu"]["platform"])
+        self.assertIsNone(result.baseline["gpu"]["spec"])
+
+    def test_prompt_requires_same_spec_comparison(self):
+        """提示词里必须写明这条规则 —— 否则模型会拿 1TB 的价格说"更划算"。"""
+        text = (ROOT / "ops" / "prompts" / "price_watch.md").read_text(encoding="utf-8")
+        self.assertIn("比价必须同", text)
+        self.assertIn("到价 ≠ 可以买", text)
+        self.assertIn("buy_signal", text)
+
+    def test_prompt_asks_for_a_clear_recommendation(self):
+        text = (ROOT / "ops" / "prompts" / "price_watch.md").read_text(encoding="utf-8")
+        for phrase in ("再等等", "现在就可以下单", "现在都不值得买"):
+            self.assertIn(phrase, text)
+
+
 class TestStockSample(unittest.TestCase):
     def test_sample_shape(self):
         sample = point(stock_state=33, stock_label="现货", stock_buyable=True,

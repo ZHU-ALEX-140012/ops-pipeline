@@ -523,6 +523,10 @@ class PriceHistory:
     stock_buyable: bool | None = None
     stock_label: str = ""
     stock_remaining: int | None = None
+    # **上一轮**的心理价。判"值得下手"这种跨越时必须用它，而不是本轮的目标价 ——
+    # 否则用户改一次心理价，系统就会拿新目标去算旧状态，
+    # 把"刚刚才满足"误判成"早就满足了"，于是**漏掉那条最该报的信号**。
+    target_price: float | None = None
 
 
 @dataclass
@@ -543,6 +547,14 @@ class PriceRules:
     # 库存：开着就盯"补货/卖完"，并在"仅剩 N 件"时提一句
     watch_stock: bool = False
     stock_low_threshold: int | None = 3
+    # 跨候选比较用的两个标签（会写进 run_doc，让判断层能做同类比较）
+    #
+    # `platform`：同一平台 = 同一类东西，可以直接比价
+    #             （例如同为 "dgx_spark" 的三个渠道）
+    # `spec`    ：配置（例如 "128G+4TB"）。**比价必须同 spec 比** ——
+    #             1TB 版比 4TB 版便宜是应该的，那不是"更划算"。
+    platform: str = ""
+    spec: str = ""
 
     @classmethod
     def from_config(cls, raw: Mapping[str, Any] | None) -> PriceRules:
@@ -573,6 +585,8 @@ class PriceRules:
             max_price=number("max_price", None),
             watch_stock=bool(raw.get("watch_stock", False)),
             stock_low_threshold=whole("stock_low_threshold", 3),
+            platform=str(raw.get("platform") or ""),
+            spec=str(raw.get("spec") or ""),
         )
 
 
@@ -658,6 +672,11 @@ def analyze_prices(
             "stock_now": point.stock_label or None,
             "stock_remaining": point.stock_remaining,
             "stock_prev": hist.stock_label or None,
+            # 跨候选比较需要的东西：判断层靠它们回答"哪个值得买"
+            #   `target_price` 是这个商品的心理价位；`platform`/`spec` 决定能不能直接比
+            "target_price": rule.target_price,
+            "platform": rule.platform or None,
+            "spec": rule.spec or None,
         }
 
         if not point.ok or point.value is None:
@@ -697,10 +716,17 @@ def analyze_prices(
             crossed = hist.last_value is None or hist.last_value > rule.target_price
             gap = (rule.target_price - value) / rule.target_price * 100
             if crossed:
+                # ⚠️ 到价**不等于**可以买。如果当前无货，"价格到了"是没用的信息 ——
+                #    必须在文案里说清楚，否则收件人会白跑一趟。
+                stock_suffix = ""
+                if point.stock_buyable is False:
+                    stock_suffix = "（⚠️ 但当前**无货**，暂时买不到）"
+                elif point.stock_buyable is True and point.stock_remaining is not None:
+                    stock_suffix = f"（现货，仅剩 {point.stock_remaining} 件）"
                 anomalies.append(judge.Anomaly(
                     "price_below_target", point.item,
                     f"「{name}」现价 {format_price(value, currency)} 已到你的目标价 "
-                    f"{format_price(rule.target_price, currency)}（低 {gap:.1f}%）",
+                    f"{format_price(rule.target_price, currency)}（低 {gap:.1f}%）{stock_suffix}",
                     rule.target_severity,
                 ))
             else:
@@ -711,6 +737,53 @@ def analyze_prices(
                     f"（低 {gap:.1f}%）—— 这是**持续状态**，不重复提醒；"
                     f"只有再次跌破或明显变化时才报"
                 )
+
+        # ③ 「值得下手」：**到价 + 现货**，两个条件同时成立才算
+        #
+        # ⚠️ 这一条是整套价格监控里最该有的东西，因为它回答的是
+        #    **"我现在该不该掏钱"** —— 而"到价"和"有货"单独看都不够：
+        #      * 到价但无货 → 买不到，白高兴
+        #      * 有货但没到价 → 还能再等
+        #    只有两个同时成立，"可以买了"这句话才站得住。
+        #
+        # 判据同样是**跨越**：上一轮还不满足（没到价，或没货），这一轮满足了。
+        # 因为"到价且有货"是个状态，不是事件 —— 每轮都报会变成唠叨。
+        if (rule.target_price is not None and value <= rule.target_price
+                and point.stock_buyable is True):
+            # ⚠️ 用**上一轮记下来的心理价**，不是本轮的 ——
+            #    用户改过目标价时，拿新目标去算旧状态会把"刚刚满足"误判成"早就满足"，
+            #    于是漏掉这条最该报的信号。（实测踩到过。）
+            previous_target = (hist.target_price if hist.target_price is not None
+                               else rule.target_price)
+            previous_ok = (
+                hist.last_value is not None
+                and hist.last_value <= previous_target
+                and hist.stock_buyable is True
+            )
+            if not previous_ok:
+                remaining = (f"，仅剩 {point.stock_remaining} 件"
+                             if point.stock_remaining is not None else "")
+                # 解释"为什么现在才报"，必须和上面的判断用**同一个** previous_target ——
+                # 否则会出现"判断说刚满足、解释却说首次观测"这种自相矛盾。
+                was = []
+                if hist.last_value is None:
+                    pass
+                elif hist.last_value > previous_target:
+                    was.append(f"上一轮还 {format_price(hist.last_value, currency)}"
+                               f"，高于当时的目标价 "
+                               f"{format_price(previous_target, currency)}")
+                elif hist.stock_buyable is False:
+                    was.append("上一轮还没货")
+                if hist.stock_buyable is False and not was:
+                    was.append("上一轮还没货")
+                reason = ("（" + "、".join(was) + "）") if was else "（首次观测）"
+                anomalies.append(judge.Anomaly(
+                    "buy_signal", point.item,
+                    f"「{name}」**值得下手了**：{format_price(value, currency)} "
+                    f"已到目标价 {format_price(rule.target_price, currency)}，"
+                    f"且**现货**{remaining} {reason}",
+                    rule.target_severity,
+                ))
 
         # ③ 单次变化幅度：相对**上一次**，而不是相对中位数
         if hist.last_value:

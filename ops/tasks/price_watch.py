@@ -54,6 +54,7 @@ def build_history(conn: Any, items: list[str], *, days: int = 30,
             stock_buyable=raw["stock_buyable"],
             stock_label=raw["stock_label"],
             stock_remaining=raw["stock_remaining"],
+            target_price=raw["target_price"],
         )
     return out
 
@@ -89,13 +90,32 @@ def run(cfg: dict[str, Any], *, dry_run: bool = False, no_ai: bool = False) -> i
         # 这样下游（判据、告警、报告、历史）完全不需要知道它是怎么来的。
         manual = prices.load_manual_prices(cfg)
         points = [prices.collect_item(item, pcfg, manual) for item in items]
-        # 价格与库存各存一行样本（metric 不同），两者的历史互不干扰
+
+        # 每个商品"当前的心理价"也各存一行样本。
+        #
+        # **为什么要存**：判"值得下手"这种跨越时需要知道**上一轮**的心理价。
+        # 不存的话只能拿本轮的目标价去算旧状态 —— 用户一改目标价，
+        # 系统就会把"刚刚才满足"误判成"早就满足了"，于是漏掉那条最该报的信号。
+        rules = {
+            str(i.get("name")): prices.PriceRules.from_config(i.get("rules") or i)
+            for i in items
+        }
+        for name, rule_cfg in (task_cfg.get("rules") or {}).items():
+            rules[str(name)] = prices.PriceRules.from_config(rule_cfg)
+
+        # 价格、库存、心理价各存一行样本（metric 不同），三者的历史互不干扰
         sample_rows: list[dict[str, Any]] = []
         for point in points:
             sample_rows.append(point.to_sample())
             stock_row = point.to_stock_sample()
             if stock_row:
                 sample_rows.append(stock_row)
+            target = rules.get(point.item).target_price if rules.get(point.item) else None
+            if target is not None:
+                sample_rows.append({
+                    "target": point.item, "metric": "target", "value_num": float(target),
+                    "value_text": "心理价", "ok": 1, "ts": point.ts,
+                })
         store.insert_samples(conn, run_id, sample_rows)
         got = sum(1 for p in points if p.ok)
         stocked = sum(1 for p in points if p.stock_buyable)
@@ -109,13 +129,6 @@ def run(cfg: dict[str, Any], *, dry_run: bool = False, no_ai: bool = False) -> i
         history = build_history(conn, [str(i.get("name")) for i in items],
                                 days=int(task_cfg.get("history_days", 30)),
                                 exclude_run_id=run_id)
-        rules = {
-            str(i.get("name")): prices.PriceRules.from_config(i.get("rules") or i)
-            for i in items
-        }
-        # 商品的判据既可以直接写在 [[price_watch.items]] 里，也可以放在 [price_watch.rules] 下
-        for name, rule_cfg in (task_cfg.get("rules") or {}).items():
-            rules[str(name)] = prices.PriceRules.from_config(rule_cfg)
 
         analysis = prices.analyze_prices(
             points, history, rules,

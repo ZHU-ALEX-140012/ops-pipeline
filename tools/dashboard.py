@@ -83,9 +83,19 @@ def _candidates(cfg: dict[str, Any], conn: sqlite3.Connection) -> list[dict[str,
             "buyable": (bool(float(stock_row["value_num"]) >= 0.5)
                         if stock_row and stock_row["value_num"] is not None else None),
             "url": str(item.get("url") or ""),
+            # 心理价与差额 —— 面板要能直接回答"离值得下手还差多少"
+            "target_price": (float(item["target_price"])
+                             if item.get("target_price") not in (None, "") else None),
+            "platform": str(item.get("platform") or ""),
+            "spec": str(item.get("spec") or ""),
         })
     # 有价格的排前面、按价格升序；没价格的沉底
     out.sort(key=lambda c: (c["price"] is None, c["price"] or 0))
+    for candidate in out:
+        target = candidate.get("target_price")
+        price = candidate.get("price")
+        candidate["to_target"] = (None if (target is None or price is None)
+                                  else round(price - target, 2))
     return out
 
 
@@ -299,28 +309,36 @@ def render_html(summary: dict[str, Any]) -> str:
     # 它比"任务健康度""token 消耗"重要得多，所以排在前面。
     candidates = blocks.get("candidates") or []
     if candidates:
-        cheapest = next((c["price"] for c in candidates if c["price"]), None)
         add("<div class='card full'><h2>候选对比</h2><table>")
-        add("<tr><th>价格</th><th>相对最低</th><th>库存</th><th>商品</th></tr>")
+        add("<tr><th>价格</th><th>离你的心理价</th><th>库存</th><th>商品</th>"
+            "<th>平台 / 配置</th></tr>")
         for candidate in candidates:
             price = candidate.get("price")
             shown = _fmt_price(price, candidate.get("currency"))
-            if price and cheapest:
-                delta = price - cheapest
-                cls = "ok" if delta == 0 else ""
-                diff = "最低" if delta == 0 else f"+{_fmt_price(delta, candidate.get('currency'))}"
+            # 这一列回答的是"现在该不该掏钱"：已经到价了就说"已到，值得下手"
+            to_target = candidate.get("to_target")
+            if to_target is None:
+                gap_cell = "<span class='muted'>—</span>"
+            elif to_target <= 0:
+                gap_cell = "<span class='ok'>已到 ✓</span>"
             else:
-                cls, diff = "", "—"
+                gap_cell = (f"<span class='muted'>还差 "
+                            f"{_fmt_price(to_target, candidate.get('currency'))}</span>")
             stock = candidate.get("stock") or "未解析"
             stock_cls = "ok" if candidate.get("buyable") else "bad"
             clean_stock = html.escape(re.sub(r"^\d+\s*", "", str(stock)).strip() or "—")
             label = html.escape(str(candidate.get("label") or candidate["item"]))
-            add(f"<tr><td class='mono {cls}'>{shown}</td><td class='muted'>{diff}</td>"
-                f"<td class='{stock_cls}'>{clean_stock}</td><td>{label}</td></tr>")
+            platform = html.escape(str(candidate.get("platform") or "—"))
+            spec = html.escape(str(candidate.get("spec") or ""))
+            add(f"<tr><td class='mono'>{shown}</td><td>{gap_cell}</td>"
+                f"<td class='{stock_cls}'>{clean_stock}</td><td>{label}</td>"
+                f"<td class='muted mono'>{platform}<br>{spec}</td></tr>")
         add("</table>")
         add("<p class='muted' style='margin-top:10px'>"
-            "⚠️ 不同商品**配置可能不同**（硬盘容量、品牌、自营/第三方）——"
-            "「相对最低」只是价格差，不代表同配置。买之前看清规格。</p>")
+            "「离你的心理价」为 <b>已到 ✓</b> 且库存<b>现货</b>时，才是真正的"
+            "<b>值得下手</b>（两个条件缺一不可）。<br>"
+            "⚠️ 比价要同「平台 / 配置」比 —— 1TB 版比 4TB 版便宜是应该的，"
+            "那不是更划算。</p>")
         add("</div>")
 
     # ---------------------------------------------------------- 需要你注意的事
