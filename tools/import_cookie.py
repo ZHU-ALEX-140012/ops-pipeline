@@ -69,6 +69,26 @@ def extract_cookie(text: str) -> str | None:
     return stripped if looks_like_cookie(stripped) else None
 
 
+def looks_like_a_shell_command(text: str) -> bool:
+    """剪贴板里是"要执行的命令"而不是"浏览器导出的请求"吗？
+
+    ⚠️ 这是**最常见的一次性失误**，实测遇到过：
+    用户先在浏览器里复制好 cURL，然后**又复制了一遍要运行的那条命令**，
+    剪贴板就被覆盖了。工具读到 30 个字符的 `python tools\\import_cookie.py`，
+    报一句"没找到 Cookie"，用户完全看不出问题在哪。
+
+    所以这里单独认出来，并直接点明原因和正确顺序。
+    """
+    stripped = text.strip()
+    if not stripped or len(stripped) > 300:
+        return False
+    if "\n" in stripped:  # 真实导出的请求一定有多行或很长
+        return False
+    first = stripped.split()[0].lower() if stripped.split() else ""
+    return first in {"python", "python3", "py", "powershell", "pwsh", "cmd", "curl", "type", "echo",
+                     "set-secret.cmd", "get-clipboard"} or stripped.startswith("scripts\\")
+
+
 def read_clipboard() -> str | None:
     """用 PowerShell 的 Get-Clipboard 取剪贴板（仅 Windows）。"""
     try:
@@ -127,9 +147,25 @@ def main(argv: list[str] | None = None) -> int:
     # ---------------------------------------------------------- 提取
     cookie = extract_cookie(raw)
     if not cookie:
-        print("[FAIL] 在这段内容里没找到 Cookie。请确认复制的是：")
-        print("         开发者工具 → 网络 → 右键某个请求 → 复制 → 以 cURL 格式复制")
-        print("       并把整段内容原样复制过来（不要只复制一部分）。")
+        print("[FAIL] 在这段内容里没找到 Cookie。")
+        print()
+        if looks_like_a_shell_command(raw):
+            print("  ⚠️ 剪贴板里现在是一条**命令**，不是浏览器导出的请求：")
+            print(f"       {raw.strip()[:80]}")
+            print()
+            print("  最常见的原因：你在浏览器里复制好 cURL 之后，")
+            print("  **又复制了一次要运行的那条命令**，把剪贴板覆盖掉了。")
+            print()
+            print("  正确顺序（中间不要复制任何别的东西）：")
+            print("     1) 浏览器：右键那条请求 → 复制 → 以 cURL 格式复制 (bash)")
+            print("     2) 切到 PowerShell，**用 ↑ 上箭头**调出上一条命令后回车")
+            print("        （不要再去复制这条命令 —— 那会把 cURL 冲掉）")
+            return 1
+        print("  请确认复制的是：")
+        print("     开发者工具 → 网络 → 右键某个请求 → 复制 → 以 cURL 格式复制 (bash)")
+        print("  并把整段内容原样复制过来（不要只复制一部分）。")
+        print()
+        print(f"  现在这段内容 {len(raw)} 字符，开头是：{raw.strip()[:60]!r}")
         return 1
 
     print(f"找到 Cookie：{summarize(cookie)}")

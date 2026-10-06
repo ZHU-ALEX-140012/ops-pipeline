@@ -92,6 +92,37 @@ class TestExtractCookie(unittest.TestCase):
         self.assertNotIn("jd_fakeuser", text)
 
 
+class TestDetectsOverwrittenClipboard(unittest.TestCase):
+    """⚠️ **这条测试是实测换来的。**
+
+    用户先在浏览器里复制好 cURL，然后**又复制了一遍要运行的那条命令**，
+    剪贴板被覆盖。工具只报"没找到 Cookie"，用户完全看不出问题在哪 ——
+    实际那次剪贴板里正好是 `python tools\\import_cookie.py`（30 个字符）。
+    所以这里要单独认出"剪贴板里是命令"，并直接点明原因与正确顺序。
+    """
+
+    def test_recognizes_the_exact_command_that_fooled_us(self):
+        self.assertTrue(import_cookie.looks_like_a_shell_command(
+            r"python tools\import_cookie.py"))
+
+    def test_recognizes_other_commands(self):
+        for text in ("python -m ops --task price_watch --once",
+                     "powershell -Command Get-Clipboard",
+                     r"scripts\set-secret.cmd -Name OPS_X",
+                     "curl 'https://x/'"):
+            with self.subTest(text=text):
+                self.assertTrue(import_cookie.looks_like_a_shell_command(text))
+
+    def test_does_not_flag_a_real_curl_export(self):
+        self.assertFalse(import_cookie.looks_like_a_shell_command(CURL_BASH))
+
+    def test_does_not_flag_a_bare_cookie_string(self):
+        self.assertFalse(import_cookie.looks_like_a_shell_command(GOOD_COOKIE))
+
+    def test_does_not_flag_empty(self):
+        self.assertFalse(import_cookie.looks_like_a_shell_command(""))
+
+
 class TestWriteSecret(unittest.TestCase):
     def setUp(self):
         shutil.rmtree(TMP, ignore_errors=True)
