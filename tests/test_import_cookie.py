@@ -91,6 +91,22 @@ class TestExtractCookie(unittest.TestCase):
         self.assertNotIn("AAJfakeKEYvalue", text)
         self.assertNotIn("jd_fakeuser", text)
 
+    def test_cookie_names_extracts_every_name(self):
+        names = import_cookie.cookie_names(GOOD_COOKIE)
+        self.assertEqual(names, ["__jdv", "pt_key", "pt_pin", "wlfstk_smdl"])
+
+    def test_cookie_names_tolerates_spaces_and_empty_pieces(self):
+        self.assertEqual(import_cookie.cookie_names("a=1;  b=2 ;; c=3"), ["a", "b", "c"])
+
+    def test_cookie_names_on_jd_like_tracking_set(self):
+        """真实遇到的那串（没有 pt_key）—— 名字要能全列出来供诊断。"""
+        raw = ("__jdv=76161171|baidu|-|; __jdu=1; shshshfpa=x; pin=jd_x; "
+               "unick=abc; wlfstk_smdl=y; sdtoken=z")
+        names = import_cookie.cookie_names(raw)
+        self.assertIn("pin", names)
+        self.assertNotIn("pt_key", names)
+        self.assertEqual(len(names), 7)
+
 
 class TestDetectsOverwrittenClipboard(unittest.TestCase):
     """⚠️ **这条测试是实测换来的。**

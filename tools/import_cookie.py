@@ -101,9 +101,12 @@ def read_clipboard() -> str | None:
     return proc.stdout if proc.returncode == 0 and proc.stdout else None
 
 
+def cookie_names(cookie: str) -> list[str]:
+    return [piece.split("=", 1)[0].strip() for piece in cookie.split(";") if "=" in piece]
+
+
 def summarize(cookie: str) -> str:
-    names = [piece.split("=", 1)[0].strip()
-             for piece in cookie.split(";") if "=" in piece]
+    names = cookie_names(cookie)
     return f"{len(cookie)} 字符，{len(names)} 个 Cookie：{', '.join(names[:8])}" + \
            ("…" if len(names) > 8 else "")
 
@@ -175,13 +178,32 @@ def main(argv: list[str] | None = None) -> int:
         print(cookie)
         print("--- 结束 ---")
 
-    # 常见的"白忙一场"情形：拿到的其实是无关的跟踪 Cookie
-    names = {piece.split("=", 1)[0].strip().lower()
-             for piece in cookie.split(";") if "=" in piece}
-    if "jd" in (cookie[:200] + cookie[-200:]).lower() and "pt_key" not in names:
+    # 常见的"白忙一场"情形：复制的请求里没有登录凭证
+    #
+    # ⚠️ 这里踩过一次：原来的提示写的是"请改用『网络 → 复制为 cURL』"，
+    # 但用户**已经**用的是 cURL —— 提示就变成了误导。
+    # 真正的原因通常有两种，都要说清楚：
+    #   a) 复制的不是**目标页面**的请求（登录凭证是按域名/路径发的）
+    #   b) 浏览器里其实没有登录
+    names = cookie_names(cookie)
+    lower_names = {name.lower() for name in names}
+    if "jd" in (cookie[:200] + cookie[-200:]).lower() and "pt_key" not in lower_names:
         print()
-        print("⚠️ 这串里**没有 pt_key** —— 京东的登录凭证是 HttpOnly，")
-        print("   `document.cookie` 拿不到它。请改用『网络 → 右键请求 → 复制为 cURL』。")
+        print("⚠️ 这串里**没有 pt_key** —— 京东的登录凭证不在里面。两种可能：")
+        print("   a) 你复制的**不是商品页**的请求。登录凭证是按页面/域名发的：")
+        print("      请先打开商品页（能看到价格的那个页面），再在那一页复制它的请求。")
+        print("   b) 你在这个浏览器里**其实没有登录**。先在浏览器里确认：")
+        print("      打开商品页，**页面上看得到价格吗**？看不到就是没登录。")
+        print()
+        print("   （顺带说明：控制台 `document.cookie` 拿不到 pt_key 是因为它是")
+        print("     HttpOnly —— 所以那条路无论如何都不通，不要回去试。）")
+        print()
+        print(f"  这串里实际有这 {len(names)} 个名字（**只有名字，没有值**）：")
+        for index in range(0, len(names), 6):
+            print("     " + ", ".join(names[index:index + 6]))
+        print()
+        print("  ↑ 把这一段贴出来是安全的。如果里面完全没有登录相关的名字，")
+        print("    就说明这个请求本来就没带登录态。")
 
     if args.dry_run:
         print("（--dry-run：没有写入任何东西）")
