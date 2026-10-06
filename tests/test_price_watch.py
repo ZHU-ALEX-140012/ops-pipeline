@@ -110,6 +110,40 @@ class TestPriceJudgment(unittest.TestCase):
         result = analyze([point(value=4000.0)], {}, prices.PriceRules(target_price=4000))
         self.assertIn("price_below_target", kinds(result))
 
+    def test_already_below_target_does_not_repeat(self):
+        """⚠️ **这条决定了这个价格监控能不能用。**
+
+        价格一旦低于目标价，如果每轮都报，用户一天会收到两次一模一样的消息，
+        然后就会把通知关掉 —— 那是"告警系统死于误报"的标准死法。
+        所以要判**跨越**（上次在上面、这次不在），不是判**状态**（现在在不在下面）。
+        """
+        result = analyze([point(value=27500.0)],
+                         {"gpu": history(last_value=27999.0, lowest=27500.0, samples=5)},
+                         prices.PriceRules(target_price=28000, drop_percent=None))
+        self.assertNotIn("price_below_target", kinds(result))
+        self.assertTrue(any("持续状态" in note for note in result.notes),
+                        "不提醒也要说明'它还在下面'，否则看报告的人以为没检测到")
+
+    def test_crossing_below_target_alerts(self):
+        """上次在目标价之上、这次跌破 —— 这才是该提醒的那一刻。"""
+        result = analyze([point(value=27500.0)],
+                         {"gpu": history(last_value=30000.0, lowest=27500.0, samples=5)},
+                         prices.PriceRules(target_price=28000, drop_percent=None))
+        self.assertIn("price_below_target", kinds(result))
+
+    def test_first_observation_below_target_alerts(self):
+        """没有历史时的第一次观测也算跨越 —— 你确实需要知道'它已经在目标价下面了'。"""
+        result = analyze([point(value=27500.0)], {},
+                         prices.PriceRules(target_price=28000, drop_percent=None))
+        self.assertIn("price_below_target", kinds(result))
+
+    def test_recrossing_alerts_again(self):
+        """先涨回目标价之上、再跌破 —— 应该再提醒一次（这是新的一次机会）。"""
+        result = analyze([point(value=27500.0)],
+                         {"gpu": history(last_value=28500.0, lowest=27000.0, samples=9)},
+                         prices.PriceRules(target_price=28000, drop_percent=None))
+        self.assertIn("price_below_target", kinds(result))
+
     def test_big_drop_is_reported_relative_to_last_not_median(self):
         """单次降幅比的是**上一次**。
 

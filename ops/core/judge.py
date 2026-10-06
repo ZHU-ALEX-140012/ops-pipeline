@@ -226,7 +226,10 @@ def rule_verdict(run_id: str, task: str, analysis: Analysis) -> dict[str, Any]:
         # 否则报告在骗人，整套系统的可信度就此归零。
         if ok >= total:
             severity = "info"
-            headline = f"{task}: 全部正常（{ok}/{total}，p95 {p95}ms）"
+            # p95 只对"探测类"任务有意义。硬拼上去会让价格任务显示成
+            # "全部正常（1/1，p95 Nonems）" —— 那是胡说。
+            suffix = f"，p95 {p95}ms" if p95 is not None else ""
+            headline = f"{task}: 全部正常（{ok}/{total}{suffix}）"
         else:
             severity = "notice"
             headline = (

@@ -190,6 +190,106 @@ def post_json(
         return False, f"{type(exc).__name__}: {exc}", None
 
 
+def fetch_text(
+    method: str,
+    url: str,
+    *,
+    timeout_ms: int = 8000,
+    max_bytes: int = 400_000,
+    extra_headers: dict[str, str] | None = None,
+    json_body: Any = None,
+) -> "TextResponse":
+    """取一段**有界**的文本（HTML 或任意文本），用于"从页面里抠一个值"。
+
+    与 `request_json` 的区别：那个只留 2000 字节（够报错，不够解析页面），
+    这个按 `max_bytes` 留一段可解析的正文。**仍然是有界读** ——
+    上限由调用方给，不会把整个页面/无限流读进内存。
+
+    编码按 UTF-8 → GBK 依次尝试：国内不少站点还是 GBK，
+    解错了会让"元"变成乱码，正则也就跟着匹配不上。
+    """
+    headers = {
+        "Accept": "text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8",
+        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+        "User-Agent": DEFAULT_UA,
+    }
+    headers.update(extra_headers or {})
+    payload = None
+    if json_body is not None:
+        payload = json.dumps(json_body, ensure_ascii=False).encode("utf-8")
+        headers["Content-Type"] = "application/json; charset=utf-8"
+
+    started = time.perf_counter()
+    status: int | None = None
+    raw = b""
+    error: str | None = None
+    ctype = ""
+    try:
+        req = urllib.request.Request(url, data=payload, headers=headers, method=method.upper())
+        with urllib.request.urlopen(req, timeout=timeout_ms / 1000) as resp:
+            status = resp.status
+            ctype = resp.headers.get("Content-Type", "") or ""
+            raw = resp.read(max_bytes)
+    except urllib.error.HTTPError as exc:
+        # 4xx/5xx 也是"有响应"，但页面内容基本没用 —— 仍然把状态码带回去
+        status = exc.code
+        ctype = exc.headers.get("Content-Type", "") if exc.headers else ""
+        try:
+            raw = exc.read(8192)
+        except Exception:  # noqa: BLE001
+            raw = b""
+    except urllib.error.URLError as exc:
+        error = f"URLError: {exc.reason}"
+    except (socket.timeout, TimeoutError):
+        error = f"timeout after {timeout_ms}ms"
+    except Exception as exc:  # noqa: BLE001
+        error = f"{type(exc).__name__}: {exc}"
+
+    lowered = ctype.lower()
+    if "gbk" in lowered or "gb2312" in lowered or "gb18030" in lowered:
+        encodings = ("gb18030", "utf-8")
+    else:
+        encodings = ("utf-8", "gb18030")
+    text = ""
+    for encoding in encodings:
+        try:
+            text = raw.decode(encoding)
+            break
+        except UnicodeDecodeError:
+            continue
+    if not text and raw:
+        text = raw.decode("utf-8", "replace")
+
+    return TextResponse(
+        status=status, latency_ms=round((time.perf_counter() - started) * 1000, 1),
+        text=text, bytes_read=len(raw), truncated=len(raw) >= max_bytes,
+        content_type=ctype, error=error,
+    )
+
+
+@dataclass
+class TextResponse:
+    """一次文本抓取的结果（不含任何解析结论）。"""
+
+    status: int | None
+    latency_ms: float
+    text: str = ""
+    bytes_read: int = 0
+    truncated: bool = False
+    content_type: str = ""
+    error: str | None = None
+
+    @property
+    def ok(self) -> bool:
+        """对"从页面抠值"来说，ok 必须是 **2xx**，不是"有响应"。
+
+        这一点和 `JsonResponse.ok` 刻意不同：那个给契约断言层用
+        （4xx/5xx 也算有响应、也要能看到状态码）。抠值拿一个 404 页面
+        继续走只会得到一个莫名其妙的"没匹配到"。
+        """
+        return self.error is None and self.status is not None and 200 <= self.status < 300
+
+
 def post_text(
     url: str, text: str, *, headers: dict[str, str] | None = None, timeout_s: float = 10
 ) -> tuple[bool, str, Any]:

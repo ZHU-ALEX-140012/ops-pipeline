@@ -33,8 +33,10 @@
 
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Mapping
 
 from . import http, judge
@@ -97,6 +99,53 @@ def report_style() -> dict[str, Any]:
     return {"value_format": value_cell, "baseline_columns": columns()}
 
 
+# ---------------------------------------------------------------- 人工录入的价格
+#
+# 有些商品**没有可自动抓的源**：官方店封机器人、电商返回反爬页、
+# 商品页价格是 JS 渲染的。这时候最诚实的做法不是硬爬，而是
+# **让人看一眼、敲一条命令**，剩下的（历史、判据、告警、报告）全自动。
+#
+# 对"一个月看一次"的东西（比如 DGX Spark 这种几万块的设备）这就是最实用的形态。
+
+MANUAL_FILE = "manual-prices.json"
+
+
+def manual_prices_path(cfg: dict[str, Any]) -> Path:
+    from . import config as cfgmod
+
+    return Path(cfgmod.data_dir(cfg, "state")) / MANUAL_FILE
+
+
+def load_manual_prices(cfg: dict[str, Any]) -> dict[str, Any]:
+    """读人工录入的价格。文件不存在/坏了都返回空 dict —— 绝不因此炸掉整轮。"""
+    path = manual_prices_path(cfg)
+    if not path.is_file():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def save_manual_price(cfg: dict[str, Any], item: str, price: float | str,
+                      currency: str = "CNY", note: str = "") -> Path:
+    """记一条人工价格。**带时间戳**，因为"什么时候看到的"本身就是证据。"""
+    from . import config as cfgmod
+
+    data = load_manual_prices(cfg)
+    data[item] = {
+        "price": price,
+        "currency": currency,
+        "note": note,
+        "recorded_at": http.utc_now(),
+    }
+    path = manual_prices_path(cfg)
+    cfgmod.ensure_dir(path.parent)
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    return path
+
+
 # ---------------------------------------------------------------- 纯函数：解析
 
 def extract_path(payload: Any, path: str | None) -> Any:
@@ -147,6 +196,23 @@ def parse_price(raw: Any) -> float | None:
     return value if value > 0 else None
 
 
+def extract_regex(text: str, pattern: str) -> Any:
+    """用正则从页面文本里抠一个值。**有捕获组就用第 1 组，否则用整个匹配。**
+
+    为什么需要它：不少商品页的价格既不在 JSON 里、也没有稳定的结构化数据，
+    只在 HTML 文本里。给一条正则就能用，仍然是"配置驱动"，
+    **不是给某个站点写死的爬虫** —— 换站点只改配置，不改代码。
+    """
+    try:
+        compiled = re.compile(pattern, re.S)
+    except re.error as exc:
+        raise ValueError(f"price_regex 不是合法正则：{exc}") from exc
+    match = compiled.search(text)
+    if not match:
+        return None
+    return match.group(1) if match.groups() else match.group(0)
+
+
 # ---------------------------------------------------------------- 数据结构
 
 @dataclass
@@ -161,6 +227,10 @@ class PricePoint:
     error: str | None = None
     ts: str = ""
     url: str = ""
+    source: str = "json"
+    # 人工录入时才有：你是什么时候看到的、以及备注
+    recorded_at: str = ""
+    note: str = ""
 
     def to_sample(self) -> dict[str, Any]:
         # 复用 sample 表：metric 固定 price，value_num 存价格、value_text 存标签。
@@ -172,6 +242,7 @@ class PricePoint:
             "value_num": self.value if self.ok else None,
             "value_text": self.label or self.item,
             "currency": self.currency,
+            "source": self.source,
             "ok": 1 if self.ok else 0,
             "ts": self.ts,
             "status_code": None,
@@ -305,14 +376,33 @@ def analyze_prices(
                 ))
 
         # ② 到价：唯一真正确定的判据
+        #
+        # ⚠️ **只在"刚跌破"时提醒，不在"一直在下面"时每轮提醒。**
+        #
+        # 这是价格监控能不能用的关键。价格一旦低于目标价，如果每轮都报，
+        # 你会一天收到两次一模一样的消息，然后就会把通知关掉 ——
+        # 那正是"告警系统死于误报"的标准死法。
+        #
+        # 判据是**跨越**（上一次在目标价之上、这次不在），而不是**状态**（现在在不在下面）。
+        # 没有历史时的第一次观测也算跨越 —— 那时你确实需要知道"它已经在目标价下面了"。
         if rule.target_price is not None and value <= rule.target_price:
+            crossed = hist.last_value is None or hist.last_value > rule.target_price
             gap = (rule.target_price - value) / rule.target_price * 100
-            anomalies.append(judge.Anomaly(
-                "price_below_target", point.item,
-                f"「{name}」现价 {format_price(value, currency)} 已到你的目标价 "
-                f"{format_price(rule.target_price, currency)}（低 {gap:.1f}%）",
-                rule.target_severity,
-            ))
+            if crossed:
+                anomalies.append(judge.Anomaly(
+                    "price_below_target", point.item,
+                    f"「{name}」现价 {format_price(value, currency)} 已到你的目标价 "
+                    f"{format_price(rule.target_price, currency)}（低 {gap:.1f}%）",
+                    rule.target_severity,
+                ))
+            else:
+                # 持续在目标价下方：记一笔说明，但不打扰
+                notes.append(
+                    f"「{name}」现价 {format_price(value, currency)} "
+                    f"仍在目标价 {format_price(rule.target_price, currency)} 之下"
+                    f"（低 {gap:.1f}%）—— 这是**持续状态**，不重复提醒；"
+                    f"只有再次跌破或明显变化时才报"
+                )
 
         # ③ 单次变化幅度：相对**上一次**，而不是相对中位数
         if hist.last_value:
@@ -370,27 +460,91 @@ def analyze_prices(
 
 # ---------------------------------------------------------------- 采集（唯一有 I/O 的地方）
 
-def collect_item(item_cfg: Mapping[str, Any], pcfg: http.ProbeConfig) -> PricePoint:
-    """抓一个商品的价格。
+def collect_item(item_cfg: Mapping[str, Any], pcfg: http.ProbeConfig,
+                 manual: Mapping[str, Any] | None = None) -> PricePoint:
+    """取一个商品的价格。三种来源，按配置选：
 
-    **采集是配置驱动的通用能力**：给它一个返回 JSON 的地址和一个取值路径，
-    它就能用。刻意不去爬电商页面 —— 那类站点有反爬、有 ToS 限制、改版就失效，
-    把系统绑死在一个会随时坏掉的抓取上，是这类项目最常见的死法。
+    | `source` | 怎么取 | 需要什么 |
+    |---|---|---|
+    | `json`（默认） | 请求 → JSON → 按路径取值 | `url` + `price_path` |
+    | `html` | 请求 → 文本 → 按正则抠值 | `url` + `price_regex` |
+    | `manual` | 读人工录入的状态文件 | `tools/price_set.py` 记过一条 |
+
+    **采集是配置驱动的通用能力**：给它地址和取值方式，它就能用。
+    刻意不去爬特定电商 —— 那类站点有反爬、有 ToS 限制、改版就失效，
+    而且实测里它们连请求都不给你（见 README 的探测结论）。
+    "抓不到"是常态，所以 `manual` 是**一等公民**而不是补丁。
     """
     name = str(item_cfg.get("name") or "")
     label = str(item_cfg.get("label") or name)
-    url = str(item_cfg.get("url") or "")
     currency = str(item_cfg.get("currency") or "CNY")
-    path = item_cfg.get("price_path")
-    method = str(item_cfg.get("method") or "GET").upper()
-    body = item_cfg.get("payload") if method == "POST" else None
+    source = str(item_cfg.get("source") or ("html" if item_cfg.get("price_regex") else "json"))
     ts = http.utc_now()
 
-    point = PricePoint(item=name, label=label, currency=currency, ts=ts, url=url)
+    point = PricePoint(item=name, label=label, currency=currency, ts=ts,
+                       url=str(item_cfg.get("url") or ""), source=source)
+
+    # ---------------------------------------------------------- 人工录入
+    if source == "manual":
+        entry = (manual or {}).get(name)
+        if not isinstance(entry, Mapping):
+            point.error = (f"还没有「{name}」的人工价格。"
+                           f"用 tools/price_set.py --item {name} --price <价格> 记一条")
+            return point
+        value = parse_price(entry.get("price"))
+        if value is None:
+            point.error = f"人工录入的值没法当价格解析：{entry.get('price')!r}"
+            return point
+        point.value = value
+        point.currency = str(entry.get("currency") or currency)
+        point.ok = True
+        point.recorded_at = str(entry.get("recorded_at") or "")
+        point.note = str(entry.get("note") or "")
+        return point
+
+    url = str(item_cfg.get("url") or "")
     if not url:
         point.error = "配置里没有 url"
         return point
 
+    # ---------------------------------------------------------- 页面文本 + 正则
+    if source == "html" or item_cfg.get("price_regex"):
+        pattern = item_cfg.get("price_regex")
+        if not pattern:
+            point.error = "source=html 但没有配 price_regex"
+            return point
+        response = http.fetch_text(
+            str(item_cfg.get("method") or "GET").upper(), url,
+            timeout_ms=int(item_cfg.get("timeout_ms") or pcfg.timeout_ms),
+            max_bytes=int(item_cfg.get("max_bytes") or 400_000),
+            extra_headers=item_cfg.get("headers"),
+        )
+        if not response.ok:
+            point.error = response.error or f"HTTP {response.status}"
+            return point
+        if response.truncated:
+            # 截断意味着"价格可能在没读到的那部分里"，必须说出来，不能装作读全了
+            point.note = f"页面被截断在 {response.bytes_read} 字节，未匹配到不代表页面上没有"
+        try:
+            raw = extract_regex(response.text, str(pattern))
+        except ValueError as exc:
+            point.error = str(exc)
+            return point
+        if raw is None:
+            point.error = (f"正则在页面里没匹配到价格（读了 {response.bytes_read} 字节）。"
+                           f"页面改版或价格由 JS 渲染时会发生这种情况")
+            return point
+        value = parse_price(raw)
+        if value is None:
+            point.error = f"正则匹配到的值没法当价格解析：{raw!r}"
+            return point
+        point.value = value
+        point.ok = True
+        return point
+
+    # ---------------------------------------------------------- JSON + 路径
+    method = str(item_cfg.get("method") or "GET").upper()
+    body = item_cfg.get("payload") if method == "POST" else None
     response = http.request_json(
         method, url,
         json_body=body,
@@ -409,7 +563,7 @@ def collect_item(item_cfg: Mapping[str, Any], pcfg: http.ProbeConfig) -> PricePo
         return point
 
     try:
-        raw = extract_path(response.body, path)
+        raw = extract_path(response.body, item_cfg.get("price_path"))
     except KeyError as exc:
         point.error = str(exc)
         return point

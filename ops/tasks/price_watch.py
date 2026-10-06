@@ -71,10 +71,15 @@ def run(cfg: dict[str, Any], *, dry_run: bool = False, no_ai: bool = False) -> i
             rate_limit_ms=int(task_cfg.get("rate_limit_ms", 800)),
         )
         items = [i for i in (task_cfg.get("items") or []) if i.get("enabled", True)]
-        points = [prices.collect_item(item, pcfg) for item in items]
+        # 人工录入的价格当作一种"源"喂给同一个采集器 ——
+        # 这样下游（判据、告警、报告、历史）完全不需要知道它是怎么来的。
+        manual = prices.load_manual_prices(cfg)
+        points = [prices.collect_item(item, pcfg, manual) for item in items]
         store.insert_samples(conn, run_id, [p.to_sample() for p in points])
         got = sum(1 for p in points if p.ok)
         log_lines.append(f"采集 {len(points)} 个商品，取到价格 {got} 个")
+        if points and all(not p.ok for p in points) and manual:
+            log_lines.append("提示：本轮一个价都没取到，先检查 url / price_path / price_regex 配置")
 
         # ---------------------------------------------------------- 2. 判据
         history = build_history(conn, [str(i.get("name")) for i in items],
