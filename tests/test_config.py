@@ -155,6 +155,42 @@ class TestRepoIsSafeToPublish(unittest.TestCase):
                                  encoding="utf-8", errors="replace").stdout.strip()
         self.assertEqual(tracked, "", "scripts/run_once.cmd 不该被跟踪（它由 register_tasks 生成）")
 
+    def test_commit_authors_use_a_private_email(self):
+        """⚠️ 提交里的邮箱必须是**不公开**的那种。
+
+        这是实测想到的一条：原来作者信息是"真名 + 个人 QQ 邮箱"，
+        而它会被写进**每一个提交**、推到公开仓库后谁都能看到 ——
+        等于公开招揽垃圾邮件。真名对简历是好事，邮箱不是。
+
+        所以这里把它变成硬约束：任何一次提交如果用了私人邮箱，测试就红。
+        """
+        import subprocess
+
+        log = subprocess.run(["git", "log", "--format=%ae%n%ce"], cwd=str(ROOT),
+                             capture_output=True, text=True, encoding="utf-8",
+                             errors="replace").stdout
+        emails = {e.strip() for e in log.splitlines() if e.strip()}
+        if not emails:
+            self.skipTest("还不是 git 仓库或没有提交")
+        offenders = [e for e in emails if not e.endswith("users.noreply.github.com")]
+        self.assertEqual(
+            offenders, [],
+            f"提交里出现了非私密邮箱：{offenders}。"
+            "公开仓库请用 <用户名>@users.noreply.github.com",
+        )
+
+    def test_commit_author_names_are_consistent(self):
+        """姓名可以是真的（简历需要），但必须是**同一个** —— 混用会显得历史很乱。"""
+        import subprocess
+
+        log = subprocess.run(["git", "log", "--format=%an"], cwd=str(ROOT),
+                             capture_output=True, text=True, encoding="utf-8",
+                             errors="replace").stdout
+        names = {n.strip() for n in log.splitlines() if n.strip()}
+        if not names:
+            self.skipTest("还不是 git 仓库或没有提交")
+        self.assertEqual(len(names), 1, f"提交里混了多个作者名：{sorted(names)}")
+
 
 class TestOverrides(unittest.TestCase):
     def setUp(self):
