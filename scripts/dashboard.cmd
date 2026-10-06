@@ -23,7 +23,7 @@ for /f "usebackq tokens=1 delims= " %%P in (`findstr /r /c:"python.exe" "scripts
 )
 if not defined PYTHON set "PYTHON=python"
 
-"%PYTHON%" tools\dashboard.py --port 8899
+"%PYTHON%" tools\dashboard.py --port 8899 --open
 
 echo.
 echo   Dashboard stopped.

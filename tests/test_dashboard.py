@@ -171,6 +171,70 @@ class TestRenderEscaping(DashboardTestBase):
         self.assertIn("天生有偏", html)
 
 
+class TestStartupMessage(unittest.TestCase):
+    """启动时那段话要能**独自回答"我现在该干什么"**。
+
+    ⚠️ 这是实测换来的：第一版只打了一行 `只读面板: http://... （Ctrl+C 停止）`，
+    用户双击桌面快捷方式后看到一个黑窗口，反馈"点开后没东西" ——
+    因为他期待的是"看到面板"，而拿到的是一个正在跑服务的终端，
+    那句提示里**没有任何一句话在说"去浏览器打开它"**。
+    """
+
+    def test_message_contains_the_url(self):
+        text = dashboard.startup_message("127.0.0.1", 8899)
+        self.assertIn("http://127.0.0.1:8899/", text)
+
+    def test_message_tells_you_to_open_a_browser(self):
+        text = dashboard.startup_message("127.0.0.1", 8899)
+        self.assertIn("浏览器", text)
+        self.assertIn("地址栏", text)
+
+    def test_message_warns_not_to_close_the_window(self):
+        self.assertIn("不要关", dashboard.startup_message("127.0.0.1", 8899))
+
+    def test_message_says_how_to_open_it_again(self):
+        self.assertIn("再双击", dashboard.startup_message("127.0.0.1", 8899))
+
+
+class TestOpenInBrowser(unittest.TestCase):
+    def test_returns_false_instead_of_raising_when_it_cannot_open(self):
+        """打不开浏览器**不该让面板起不来** —— 我们还会把地址打印出来。"""
+        import webbrowser
+
+        original = webbrowser.open
+
+        def boom(*args, **kwargs):
+            raise RuntimeError("boom")
+
+        webbrowser.open = boom
+        try:
+            self.assertFalse(dashboard.open_in_browser("http://127.0.0.1:1/"))
+        finally:
+            webbrowser.open = original
+
+    def test_passes_the_url_through(self):
+        import webbrowser
+
+        seen: list[str] = []
+        original = webbrowser.open
+
+        def record(url, *args, **kwargs):
+            seen.append(url)
+            return True
+
+        webbrowser.open = record
+        try:
+            self.assertTrue(dashboard.open_in_browser("http://127.0.0.1:8899/"))
+        finally:
+            webbrowser.open = original
+        self.assertEqual(seen, ["http://127.0.0.1:8899/"])
+
+    def test_launcher_passes_the_open_flag(self):
+        """`dashboard.cmd` 必须带 `--open` —— 否则双击后还是"没东西"。"""
+        text = (ROOT / "scripts" / "dashboard.cmd").read_text(encoding="ascii")
+        self.assertIn("--open", text)
+
+
 class TestHttpSurface(DashboardTestBase):
     """起一个真的 HTTP 服务，验证路由、状态码与安全响应头。"""
 

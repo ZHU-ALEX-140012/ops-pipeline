@@ -501,12 +501,55 @@ def make_handler(cfg: dict[str, Any]):
     return Handler
 
 
-def serve(cfg: dict[str, Any], *, host: str = HOST, port: int = DEFAULT_PORT) -> None:
+def startup_message(host: str, port: int) -> str:
+    """启动时给用户看的话。**这段话要能独自回答"我现在该干什么"。**
+
+    ⚠️ 这里踩过一次：第一版只打了一行 `只读面板: http://... （Ctrl+C 停止）`，
+    用户双击桌面快捷方式后看到一个黑窗口，反馈"点开后没东西"。
+    因为**他期待的是"看到面板"**，而拿到的是一个正在跑服务的终端 ——
+    那句提示里没有任何一句话在说"去浏览器打开它"。
+
+    所以现在把话说全：地址、下一步动作、以及**别关窗口**。
+    """
+    url = f"http://{host}:{port}/"
+    bar = "=" * 64
+    return "\n".join([
+        "",
+        bar,
+        "  面板已经跑起来了。现在去看它：",
+        "",
+        f"      {url}",
+        "",
+        "  浏览器一般会自动打开。如果没有，把上面这行复制到地址栏。",
+        "",
+        "  ⚠️ 这个黑窗口**不要关** —— 关了面板就停了。",
+        "     还想看的时候，再双击一次桌面上的「ops 面板」。",
+        bar,
+        "",
+    ])
+
+
+def open_in_browser(url: str) -> bool:
+    """让系统默认浏览器打开这个地址。失败也不影响服务 —— 我们会打印地址。"""
+    try:
+        import webbrowser
+
+        return bool(webbrowser.open(url))
+    except Exception:  # noqa: BLE001 - 打不开浏览器不该让面板起不来
+        return False
+
+
+def serve(cfg: dict[str, Any], *, host: str = HOST, port: int = DEFAULT_PORT,
+          open_browser: bool = False) -> None:
     from http.server import ThreadingHTTPServer
 
+    # 先绑定端口，**再**打提示开浏览器：这样浏览器去连的时候服务已经在听了，
+    # 不会出现"打开浏览器却显示无法访问"的竞态。
     httpd = ThreadingHTTPServer((host, port), make_handler(cfg))
-    print(f"只读面板: http://{host}:{port}/   （Ctrl+C 停止）")
-    print("只绑本机回环地址，不会出现在局域网上。")
+    print(startup_message(host, port))
+    if open_browser:
+        if not open_in_browser(f"http://{host}:{port}/"):
+            print("  （没能自动打开浏览器，请手动复制上面的地址）")
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
@@ -530,6 +573,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--hours", type=int, default=24, help="统计窗口（小时）")
     parser.add_argument("--json", action="store_true", help="打印汇总 JSON 后退出")
     parser.add_argument("--once", action="store_true", help="渲染一次 HTML 到 stdout 后退出")
+    parser.add_argument("--open", action="store_true", dest="open_browser",
+                        help="启动后用系统默认浏览器打开（双击快捷方式时用这个）")
     args = parser.parse_args(argv)
 
     cfg = cfgmod.load_config(args.config)
@@ -540,7 +585,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.once:
         print(render_html(collect_summary(cfg, hours=args.hours)))
         return 0
-    serve(cfg, host=args.host, port=args.port)
+    serve(cfg, host=args.host, port=args.port, open_browser=args.open_browser)
     return 0
 
 
