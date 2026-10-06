@@ -72,6 +72,59 @@ class TestEveryEntryPointIsConsoleSafe(unittest.TestCase):
             tmp.unlink(missing_ok=True)
 
 
+class TestBatchFilesAreAsciiOnly(unittest.TestCase):
+    """`.cmd` 文件必须是纯 ASCII。
+
+    ## 真实踩到的坑
+
+    我给面板写了个双击启动的 `scripts/dashboard.cmd`，里面写了中文注释和
+    中文提示，还在开头加了 `chcp 65001`（想着这样中文就不乱码了）。
+    结果双击后一堆：
+
+        '解释器优先复用' is not recognized as an internal or external command
+        File "...\\run_once.cmd", line 1  @echo off  SyntaxError
+
+    也就是 **cmd.exe 把中文注释当成命令去执行了**，最后甚至让 Python 去跑一个 .cmd。
+
+    两个原因叠在一起：
+
+    1. **`.cmd` 里的多字节字符会打乱 cmd.exe 的解析**；
+    2. **在 `.cmd` 里 `chcp` 改代码页会让 cmd.exe 自己的读取位置错乱** ——
+       它按字节偏移读文件，中途换代码页就对不上了。
+
+    项目里**本来所有 `.cmd` 都是 0 非 ASCII**（register_tasks.cmd / set-secret.cmd …），
+    是既有约定，我破坏了它。所以这条测试把它变成硬约束：
+    **`.cmd` 只放 ASCII，给用户看的中文一律从 Python 那边打印**
+    （Python 侧有 `make_console_safe()` 处理编码）。
+    """
+
+    def cmd_files(self) -> list[Path]:
+        return sorted((ROOT / "scripts").glob("*.cmd"))
+
+    def test_there_are_some(self):
+        self.assertTrue(self.cmd_files(), "scripts/ 下应该至少有一个 .cmd")
+
+    def test_all_cmd_files_are_ascii_only(self):
+        offenders: list[str] = []
+        for path in self.cmd_files():
+            bad = sum(1 for byte in path.read_bytes() if byte > 127)
+            if bad:
+                offenders.append(f"{path.name}（{bad} 个非 ASCII 字节）")
+        self.assertEqual(
+            offenders, [],
+            "这些 .cmd 里有非 ASCII 字符，cmd.exe 可能把注释当命令执行："
+            f"{offenders}。给用户看的中文请交给 Python 打印。",
+        )
+
+    def test_no_cmd_changes_the_code_page(self):
+        """`chcp` 写在 .cmd 里会让 cmd.exe 的读取位置错乱（实测过），一律不许有。"""
+        for path in self.cmd_files():
+            text = path.read_text(encoding="ascii", errors="replace")
+            body = "\n".join(line for line in text.splitlines()
+                             if not line.strip().lower().startswith("rem"))
+            self.assertNotIn("chcp", body.lower(), f"{path.name} 里不该出现 chcp")
+
+
 class TestMakeConsoleSafeBehaviour(unittest.TestCase):
     def test_replaces_unencodable_characters(self):
         """把它换成一个非 UTF-8 的编码，确认打印 emoji 不再抛异常。"""
