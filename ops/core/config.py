@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import os
+import re
 import tomllib
 from pathlib import Path
 from typing import Any
@@ -103,6 +104,31 @@ def secret_sources(cfg: dict[str, Any], env_name: str | None) -> str:
     if secrets.get(env_name):
         return f"{SECRETS_FILENAME} 里的 {env_name}"
     return f"{env_name}（环境变量与 {SECRETS_FILENAME} 中都没有）"
+
+
+def write_secret(cfg: dict[str, Any], name: str, value: str) -> Path:
+    """把一条凭据写进 `config/secrets.local.toml`（该文件已被 .gitignore 排除）。
+
+    与 `scripts/set-secret.ps1` **写同一个文件、同一个格式**（`NAME = "value"`），
+    这样两边的工具可以混用，用户不会遇到"用 A 写、B 读不到"。
+    值里的 `"` 和 `\\` 会转义 —— 但**不沿用原来的键序**：同名键会被替换掉，
+    避免文件里出现两条同名凭据（那样读到哪条就全看运气了）。
+    """
+    path = Path(cfg["_config_path"]).parent / SECRETS_FILENAME
+    lines: list[str] = []
+    if path.is_file():
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            lines = []
+    escaped = str(value).replace("\\", "\\\\").replace('"', '\\"')
+    kept = [line for line in lines
+            if line.strip() and not re.match(rf"^\s*{re.escape(name)}\s*=", line)]
+    kept.append(f'{name} = "{escaped}"')
+    path.parent.mkdir(parents=True, exist_ok=True)
+    # 不带 BOM：PowerShell 的 set-secret.ps1 也是这么写的，保持一致
+    path.write_text("\n".join(kept) + "\n", encoding="utf-8")
+    return path
 
 
 def project_root(cfg: dict[str, Any]) -> Path:

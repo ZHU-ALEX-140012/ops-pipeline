@@ -73,7 +73,15 @@ def run(cfg: dict[str, Any], *, dry_run: bool = False, no_ai: bool = False) -> i
         items = [i for i in (task_cfg.get("items") or []) if i.get("enabled", True)]
         # 凭据在这一层解析（它才拿得到 cfg 与密钥），合进 headers 后再交给采集器。
         # 采集器因此完全不碰配置与密钥，保持可纯测试。
-        items = [{**i, "headers": prices.resolve_headers(cfg, i)} for i in items]
+        prepared: list[dict[str, Any]] = []
+        for raw_item in items:
+            item = {**raw_item, "headers": prices.resolve_headers(cfg, raw_item)}
+            note = prices.credential_note(cfg, raw_item)
+            if note:
+                item["_credential_note"] = note
+                log_lines.append(f"「{raw_item.get('name')}」{note}")
+            prepared.append(item)
+        items = prepared
         # 人工录入的价格当作一种"源"喂给同一个采集器 ——
         # 这样下游（判据、告警、报告、历史）完全不需要知道它是怎么来的。
         manual = prices.load_manual_prices(cfg)

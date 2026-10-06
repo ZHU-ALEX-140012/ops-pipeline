@@ -335,12 +335,13 @@ ops-pipeline/
 │  ├─ price_stub.py       本地价格源（演示/验证用，不碰真实站点）
 │  ├─ price_probe.py      给一个网址，帮你找出能抠出价格的正则
 │  ├─ price_set.py        人工记价格（抓不到的源就靠它）
+│  ├─ import_cookie.py    从「复制为 cURL」导入登录 Cookie
 │  ├─ investigate.py      只读调查工具 CLI（判断层用 shell 调用它）
 │  ├─ feedback.py         人工反馈：记录 / 查看 / 总结 / 收信
 │  └─ notify_test.py      告警通道测试（配好通道后先点一炮）
 ├─ evals/                 评测黄金集与夹具
 ├─ scripts/               计划任务注册、通用凭据录入、启动包装
-└─ tests/                 501 个单元测试
+└─ tests/                 527 个单元测试
 ```
 
 ---
@@ -1013,30 +1014,57 @@ python tools/price_set.py --item dgx_spark --price <你看到的价格> --note "
 那几个 `?` 是**真的问号字符**（0x3F）—— 京东对**未登录**请求返回的是
 **掩码占位价**。所以结论确定：**京东要登录才给价格**，不是反爬也不是配置问题。
 
-**要做自动抓，两步（命令都实测过）**：
+**⚠️ 先记住一件事：不要用控制台 `copy(document.cookie)` 取 Cookie。**
+
+这个坑我实测踩过，而且很隐蔽：
+
+| | |
+|---|---|
+| 现象 | 那句命令**成功返回 `undefined`**，你剪贴板里也确实有东西 |
+| 真相 | 拿到的是一串**无关的跟踪 Cookie**（`__jdv`、`shshshfpa`…），**没有登录凭证** |
+| 原因 | 京东的 `pt_key` / `pt_pin` 是 **HttpOnly** —— 浏览器**故意不给网页脚本看** |
+| 后果 | 你以为拿到了，配进去，页面照样说"需要登录" |
+
+而且京东风控通常还需要 `wlfstk_smdl`、`sdtoken` 这些，
+所以"只挑 pt_key + pt_pin 两个"也不一定够。**要拿就拿完整的。**
+
+**✅ 正确做法：让浏览器自己导出整个请求（两步）**
 
 ```bash
-# 第 1 步：录入 Cookie（值只进本地密钥文件，不进版本库、不进对话记录）
-scripts\set-secret.cmd -Name OPS_JD_COOKIE -Hint "京东登录 Cookie"
-#   取值方法：浏览器登录京东 → F12 → Network → 点任意请求 →
-#             复制 Request Headers 里的整条 Cookie（形如 pt_key=xxx; pt_pin=yyy; ...）
-#   想确认录进去了：scripts\set-secret.cmd -List   （值会打码显示）
+# 第 1 步（浏览器里）：让浏览器把整个请求交出来
+#   1) 京东页面右键 → 「检查」
+#   2) 点顶部「网络」标签，按 Ctrl+R 刷新页面
+#   3) 左边列表里右键最上面那条请求（通常是 .html 或 doc）
+#      → 「复制」→「以 cURL 格式复制 (bash)」
 
-# 第 2 步：验证 + 拿到这条商品真正的价格正则（页面结构会变，别猜）
-python tools/price_probe.py --url "https://item.m.jd.com/product/100254961843.html" \
-    --cookie-env OPS_JD_COOKIE --min 15000 --max 80000
-#   它会列出页面里"像价格的东西"，并直接给出能粘进 config.toml 的 price_regex。
-#   config.toml 里已经放了一条覆盖面较广的默认正则；
-#   如果它匹配不到，把 price_probe 给出的那条替换掉即可。
+# 第 2 步（终端里）：它自动读剪贴板、提取 Cookie、写进密钥文件
+python tools\import_cookie.py
 ```
 
-`dgx_spark` 已经切成 `source = "html"` + 京东移动页 + `cookie_env = OPS_JD_COOKIE`，
-**所以录完 Cookie 就直接能跑了，不用再改配置**。
+为什么这条路能拿到 HttpOnly Cookie：**"复制为 cURL"是浏览器导出它
+实际发出去的那个请求**，包含全部请求头 —— 包括它自己藏起来不给脚本看的那些。
 
-> ⚠️ **在你录好 Cookie 之前，它每轮都会报"页面要求登录才能看到价格"。**
+工具会把"提取"这一步做掉（那串 cURL 很长，人手工挑 Cookie 极易挑错），
+并且**只报告 Cookie 的名字、不打印值**，所以你截图求助也不会泄露凭据：
+
+```
+找到 Cookie：1380 字符，12 个 Cookie：__jdv, pt_key, pt_pin, wlfstk_smdl, …
+已写入 D:\AITool\ops-pipeline\config\secrets.local.toml
+  OPS_JD_COOKIE          __jdv=76…defg
+```
+
+如果传进去的其实是控制台那种"缺 pt_key"的 Cookie，它会**主动警告**。
+
+`dgx_spark` 已经配好 `cookie_env = OPS_JD_COOKIE`，**导入完就能跑**：
+
+```bash
+python -m ops --task price_watch --once --no-ai --dry-run
+```
+
+> ⚠️ **在导入成功之前，它每轮都会报"页面要求登录才能看到价格"。**
 > **那不是 bug，是它在告诉你自己现在是瞎的。** 嫌吵就先把 `enabled` 改成 `false`。
 >
-> ⚠️ **Cookie 会过期。** 过期后同样会报警 —— 那是对的行为，
+> ⚠️ **Cookie 会过期**（一般几天到几周）。过期后同样会报警 —— 那是对的行为，
 > 宁可被吵醒，也不要安静地以为没事。
 
 ### ⚠️ 这轮实测抓到的两个"看起来能跑但结果是错的"陷阱
@@ -1123,7 +1151,7 @@ SQLite 恰好返回了另一行 —— **是运气，不是设计**。修法是�
 
 **已实测：**
 
-- **501 个单元测试**全绿：分位数、模态、异常判定、冷启动、静默时段（含跨午夜）、
+- **527 个单元测试**全绿：分位数、模态、异常判定、冷启动、静默时段（含跨午夜）、
   决策抑制、规则兜底、存储幂等、冷却、dry-run 语义、连续失败时间窗口、断言 DSL 双侧覆盖、
   日志模板提取、窗口切分、静默失败防护、基线污染防护、`--override` 路径校验、
   企业微信 `errcode` 校验、密钥文件与 BOM 容错、控制台编码健壮性、

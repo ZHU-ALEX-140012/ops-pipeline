@@ -369,22 +369,38 @@ stale_hours = 6
 #
 # ============================================================ 你要做的两步
 #
-# 第 1 步：录入 Cookie（一条命令，值只进本地密钥文件，不进版本库/不进对话）
-#     scripts\set-secret.cmd -Name OPS_JD_COOKIE -Hint "京东登录 Cookie"
-#   取值方法：浏览器登录京东 → F12 → Network → 点任意请求 →
-#             复制 Request Headers 里的整条 Cookie（形如 pt_key=xxx; pt_pin=yyy; ...）
+# ⚠️ **不要用控制台 `copy(document.cookie)` 取 Cookie。**
+#    实测确认：京东的 `pt_key` / `pt_pin` 是 **HttpOnly** ——
+#    浏览器故意不给网页脚本看，所以那句拿到的是一串无关的跟踪 Cookie
+#    （`__jdv`、`shshshfpa`…），页面照样要求登录。而且京东风控通常还需要
+#    `wlfstk_smdl`、`sdtoken` 这些，只挑两个也不一定够。
 #
-# 第 2 步：验证 + 拿到这条商品真正的价格正则（页面结构可能会变，别猜）
-#     python tools/price_probe.py --url "https://item.m.jd.com/product/100254961843.html" --cookie-env OPS_JD_COOKIE --min 15000 --max 80000
-#   它会列出页面里"像价格的东西"并直接给出可用的 price_regex。
-#   下面那个正则是一个**覆盖面较广的默认值**，如果它匹配不到，
-#   把 price_probe 给出的那条替换掉即可。
+# ✅ 正确做法：让**浏览器自己导出整个请求**，一次拿到完整 Cookie：
 #
-# ⚠️ 在你设好 Cookie 之前，这个商品每轮都会报"页面要求登录才能看到价格"——
-#    **那不是 bug，是它在告诉你自己现在是瞎的。** 设好之后就不再出现。
+#   1) 京东页面右键 → 「检查」打开开发者工具
+#   2) 点顶部 「网络」标签（英文 Network），按 **Ctrl+R** 刷新页面
+#   3) 在左边列表里**右键最上面那条请求**（通常是 `100254961843.html` 或 `doc`）
+#      → 「复制」→ 「以 cURL 格式复制 (bash)」
+#   4) 回来跑这一条 —— 它自动读剪贴板、提取 Cookie、写进密钥文件：
+#
+#        python tools\import_cookie.py
+#
+#   5) 验证：
+#
+#        python -m ops --task price_watch --once --no-ai --dry-run
+#
+#      不再出现「页面要求登录」就说明成了。
+#
+#   （也可以先从表格里逐个复制：应用程序 → 存储 → Cookie → pt_key / pt_pin，
+#     分别录进 OPS_JD_PT_KEY / OPS_JD_PT_PIN，然后把下面的 cookie_env
+#     换成 cookie_parts = [["pt_key","OPS_JD_PT_KEY"], ["pt_pin","OPS_JD_PT_PIN"]]。
+#     但既然 cURL 能一次拿全，优先用 cURL。）
+#
+# ⚠️ 凭据配齐之前，这个商品每轮都会报"页面要求登录"——
+#    **那不是 bug，是它在告诉你自己现在是瞎的。** 配齐后就不再出现。
 #    嫌吵就先把它 enabled 改成 false，配好再打开。
 #
-# ⚠️ Cookie 会过期。过期后同样会报警 —— 那是对的行为，
+# ⚠️ Cookie 会过期（一般几天到几周）。过期后同样会报警 —— 那是对的行为，
 #    宁可被吵醒，也不要安静地以为没事。
 [[price_watch.items]]
 name = "dgx_spark"
@@ -394,7 +410,7 @@ source = "html"
 url = "https://item.m.jd.com/product/100254961843.html"
 # 默认正则覆盖常见几种字段形态；price_probe 能给出更准的
 price_regex = '"(?:p|price|jdPrice)"\s*:\s*"?([0-9][0-9,]*(?:\.[0-9]+)?)"?'
-# 凭据只写"环境变量名"，值从环境变量或 config/secrets.local.toml 读
+# 整串 Cookie（由 tools/import_cookie.py 从"复制为 cURL"里导入）
 cookie_env = "OPS_JD_COOKIE"
 currency = "CNY"
 enabled = true

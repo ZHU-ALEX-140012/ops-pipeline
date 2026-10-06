@@ -315,7 +315,7 @@ class TestLoginWallDetection(unittest.TestCase):
             http.ProbeConfig(timeout_ms=5000))
         self.assertFalse(point.ok)
         self.assertIn("登录", point.error or "")
-        self.assertIn("Cookie", point.error or "")
+        self.assertIn("set-secret", point.error or "", "要说清**怎么**录入凭据")
         self.assertIn("price_set.py", point.error or "", "必须给出可行的替代方案")
 
     def test_error_differs_when_cookie_was_already_sent(self):
@@ -367,6 +367,117 @@ class TestCredentialResolution(unittest.TestCase):
         """配了 cookie_env 但值拿不到 → 就是没有 Cookie，**报错要说清**，不能假装有。"""
         headers = prices.resolve_headers(self.cfg, {"name": "x", "cookie_env": "OPS_NOT_SET"})
         self.assertNotIn("Cookie", headers)
+
+
+class TestCookieParts(unittest.TestCase):
+    """⚠️ **这组测试是实测换来的。**
+
+    我一开始让用户用浏览器控制台 `copy(document.cookie)` 拿整串 Cookie，
+    结果**拿不到登录凭证**：京东的 `pt_key` / `pt_pin` 是 **HttpOnly**，
+    浏览器故意不给网页脚本看（`document.cookie` 里根本没有它们）。
+    用户照做了，拿到的是一串无关的跟踪 Cookie，页面照样要求登录。
+
+    能看到 HttpOnly Cookie 的地方只有开发者工具的
+    「应用程序 → Cookie」表格，但那里是"一个名字一个值"，
+    逐个复制后还要人手工拼成 `pt_key=xxx; pt_pin=yyy` —— 那一步最容易出错。
+
+    所以支持"分片"写法：配置里声明哪个名字对应哪个环境变量，
+    用户只往每个变量里粘一个值，拼字符串由程序做。
+    """
+
+    def setUp(self):
+        shutil.rmtree(TMP, ignore_errors=True)
+        (TMP / "data").mkdir(parents=True, exist_ok=True)
+        self.cfg = {**cfg_for_tmp(), "_secrets": {}}
+
+    def tearDown(self):
+        shutil.rmtree(TMP, ignore_errors=True)
+        os.environ.pop("OPS_T_KEY", None)
+        os.environ.pop("OPS_T_PIN", None)
+
+    def item(self, **extra) -> dict:
+        return {"name": "x",
+                "cookie_parts": [["pt_key", "OPS_T_KEY"], ["pt_pin", "OPS_T_PIN"]],
+                **extra}
+
+    def test_parts_are_assembled_into_a_cookie_header(self):
+        self.cfg["_secrets"] = {"OPS_T_KEY": "AAJabc", "OPS_T_PIN": "jd_me"}
+        headers = prices.resolve_headers(self.cfg, self.item())
+        self.assertEqual(headers["Cookie"], "pt_key=AAJabc; pt_pin=jd_me")
+
+    def test_user_pastes_only_the_value_not_the_name(self):
+        """用户从表格里复制的是**纯值**，不用自己敲 `pt_key=` 前缀。"""
+        self.cfg["_secrets"] = {"OPS_T_KEY": "AAA", "OPS_T_PIN": "BBB"}
+        cookie = prices.resolve_headers(self.cfg, self.item())["Cookie"]
+        self.assertTrue(cookie.startswith("pt_key=AAA; pt_pin=BBB"))
+
+    def test_surrounding_whitespace_is_trimmed(self):
+        """从表格复制经常带上首尾空格/换行，直接拼会认证失败。"""
+        self.cfg["_secrets"] = {"OPS_T_KEY": "  AAA\n", "OPS_T_PIN": " BBB "}
+        headers = prices.resolve_headers(self.cfg, self.item())
+        self.assertEqual(headers["Cookie"], "pt_key=AAA; pt_pin=BBB")
+
+    def test_parts_take_precedence_over_whole_cookie(self):
+        """分片是更明确的配置，应该赢过可能不完整的整串。"""
+        self.cfg["_secrets"] = {"OPS_T_KEY": "AAA", "OPS_T_PIN": "BBB",
+                                "OPS_T_FULL": "pt_key=stale"}
+        headers = prices.resolve_headers(
+            self.cfg, self.item(cookie_env="OPS_T_FULL"))
+        self.assertEqual(headers["Cookie"], "pt_key=AAA; pt_pin=BBB")
+
+    def test_whole_cookie_used_when_parts_unavailable(self):
+        self.cfg["_secrets"] = {"OPS_T_FULL": "pt_key=xxx; pt_pin=yyy"}
+        headers = prices.resolve_headers(
+            self.cfg, {"name": "x", "cookie_parts": [["pt_key", "OPS_T_KEY"]],
+                       "cookie_env": "OPS_T_FULL"})
+        self.assertEqual(headers["Cookie"], "pt_key=xxx; pt_pin=yyy")
+
+    def test_missing_parts_are_reported_by_name(self):
+        """**少一个 pt_pin 就可能整串认证失败** —— 必须点名说缺哪个。"""
+        self.cfg["_secrets"] = {"OPS_T_KEY": "AAA"}
+        note = prices.credential_note(self.cfg, self.item())
+        self.assertIsNotNone(note)
+        self.assertIn("pt_pin", note or "")
+        self.assertIn("OPS_T_PIN", note or "")
+        self.assertIn("不完整", note or "")
+
+    def test_nothing_recorded_says_so_plainly(self):
+        note = prices.credential_note(self.cfg, self.item())
+        self.assertIn("还没录入", note or "")
+
+    def test_complete_parts_produce_no_note(self):
+        self.cfg["_secrets"] = {"OPS_T_KEY": "AAA", "OPS_T_PIN": "BBB"}
+        self.assertIsNone(prices.credential_note(self.cfg, self.item()))
+
+    def test_no_parts_configured_means_no_note(self):
+        self.assertIsNone(prices.credential_note(self.cfg, {"name": "x"}))
+
+    def test_partial_credentials_still_send_what_exists(self):
+        """只有一半也要带上 —— 让服务端去判断，而不是我们静默地什么都不发。"""
+        self.cfg["_secrets"] = {"OPS_T_KEY": "AAA"}
+        headers = prices.resolve_headers(self.cfg, self.item())
+        self.assertEqual(headers["Cookie"], "pt_key=AAA")
+
+    def test_missing_credential_note_reaches_the_error_message(self):
+        """缺凭据这件事必须出现在**报错里**，否则用户不知道该去录什么。"""
+        server = ThreadingHTTPServer(("127.0.0.1", 0), MockJdHandler)
+        port = server.server_address[1]
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            note = prices.credential_note(self.cfg, self.item())
+            point = prices.collect_item(
+                {"name": "x", "source": "html",
+                 "url": f"http://127.0.0.1:{port}/product",
+                 "price_regex": r'"price"\s*:\s*"([0-9.]+)"',
+                 "min_price": 15000,
+                 "_credential_note": note},
+                http.ProbeConfig(timeout_ms=5000))
+            self.assertFalse(point.ok)
+            self.assertIn("登录", point.error or "")
+            self.assertIn("OPS_T_PIN", point.error or "")
+        finally:
+            server.shutdown()
+            server.server_close()
 
     def test_credentials_reach_the_request(self):
         """端到端：解析出来的 Cookie 必须真的出现在 HTTP 请求里。"""

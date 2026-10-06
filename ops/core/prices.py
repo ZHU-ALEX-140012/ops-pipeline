@@ -124,25 +124,86 @@ def detect_login_wall(text: str) -> str | None:
 
 
 def resolve_headers(cfg: dict[str, Any], item_cfg: Mapping[str, Any]) -> dict[str, str]:
-    """把配置里的 `cookie_env` 解析成真正的 Cookie 头。
+    """把配置里的凭据解析成真正的 Cookie 头。
 
     **凭据只从环境变量 / `config/secrets.local.toml` 读，绝不写进 config.toml** ——
     和项目里其它凭据（企业微信 secret、邮箱授权码）走同一套机制。
 
-    为什么需要它：京东这类站点**必须登录才显示价格**，
-    而登录态只能靠 Cookie 带过去。代价也说清楚：
-    Cookie 会过期（过期后采集会失败并报警 —— 那是**对**的行为，
-    因为那意味着"你的监控瞎了"），而且它是一份凭据。
+    两种写法，`cookie_parts` 优先：
+
+    | 写法 | 配置 | 适用 |
+    |---|---|---|
+    | 整串 | `cookie_env = "OPS_X"` | 你能一次拿到完整 Cookie 串 |
+    | 分片 | `cookie_parts = [["pt_key","OPS_A"], ["pt_pin","OPS_B"]]` | 只能逐个 Cookie 值复制 |
+
+    ## ⚠️ 为什么必须有"分片"这个写法（实测换来的）
+
+    我一开始让用户用浏览器控制台 `copy(document.cookie)` 一次拿到整串，
+    结果**拿不到登录凭证**：京东的 `pt_key` / `pt_pin` 是 **HttpOnly**，
+    浏览器**故意不给网页脚本看**，所以 `document.cookie` 里根本没有它们。
+
+    能拿到 HttpOnly Cookie 的地方只有一处：**开发者工具的
+    「应用程序 → 存储 → Cookie」表格**（或「网络 → 请求标头」里的 cookie 行）。
+    但那里的表格是"一个名字一个值"，逐个复制之后还要人手工拼成
+    `pt_key=xxx; pt_pin=yyy` —— 那是最容易出错的一步。
+
+    所以让配置声明"哪个名字对应哪个环境变量"，由程序去拼：
+    用户只需要往每个环境变量里粘一个值，不用记格式、不用拼字符串。
     """
     from . import config as cfgmod
 
     headers = dict(item_cfg.get("headers") or {})
-    cookie_env = item_cfg.get("cookie_env")
-    if cookie_env:
-        cookie = cfgmod.resolve_secret(cfg, str(cookie_env))
-        if cookie:
-            headers["Cookie"] = cookie
+
+    # ① 分片（优先）：每个元素是 [cookie 名, 环境变量名]
+    parts = item_cfg.get("cookie_parts") or []
+    pieces: list[str] = []
+    for entry in parts:
+        try:
+            name, env = entry[0], entry[1]
+        except (TypeError, IndexError):
+            continue
+        value = cfgmod.resolve_secret(cfg, str(env))
+        if value and str(value).strip():
+            pieces.append(f"{name}={str(value).strip()}")
+    if pieces:
+        headers["Cookie"] = "; ".join(pieces)
+
+    # ② 整串（分片没配成时才用）
+    if "Cookie" not in headers:
+        cookie_env = item_cfg.get("cookie_env")
+        if cookie_env:
+            cookie = cfgmod.resolve_secret(cfg, str(cookie_env))
+            if cookie:
+                headers["Cookie"] = cookie.strip()
+
     return headers
+
+
+def credential_note(cfg: dict[str, Any], item_cfg: Mapping[str, Any]) -> str | None:
+    """凭据是否齐全。缺哪个就说哪个 —— 少一个 `pt_pin` 就可能整串认证失败。
+
+    单独一个函数（而不是塞进 headers 里当假头部）是为了让任务层能把它
+    写进日志与报告，而采集器不必知道"配置与密钥"这回事。
+    """
+    from . import config as cfgmod
+
+    parts = item_cfg.get("cookie_parts") or []
+    if not parts:
+        return None
+    missing: list[str] = []
+    for entry in parts:
+        try:
+            name, env = entry[0], entry[1]
+        except (TypeError, IndexError):
+            continue
+        value = cfgmod.resolve_secret(cfg, str(env))
+        if not (value and str(value).strip()):
+            missing.append(f"{name}（环境变量 {env}）")
+    if not missing:
+        return None
+    if len(missing) == len(parts):
+        return f"还没录入登录凭据：缺少 {'、'.join(missing)}"
+    return f"登录凭据不完整，缺少 {'、'.join(missing)}"
 
 
 # ---------------------------------------------------------------- 人工录入的价格
@@ -639,10 +700,15 @@ def collect_item(item_cfg: Mapping[str, Any], pcfg: http.ProbeConfig,
         if raw is None:
             # 先分辨"要登录"和"真的没匹配到" —— 这两件事的排查方向完全相反
             wall = detect_login_wall(response.text)
+            note = str(item_cfg.get("_credential_note") or "")
             if wall:
-                hint = (f"，且**已带 Cookie**（可能已过期，请重新取一份）" if using_cookie else
-                        f"。请把 {cookie_env or 'Cookie'} 配到环境变量或 "
-                        f"config/secrets.local.toml，或用 tools/price_set.py 人工记价格")
+                if using_cookie:
+                    hint = "，且**已带 Cookie**（可能已过期，请重新取一份）"
+                elif note:
+                    hint = f"。{note}；录入后重试，或用 tools/price_set.py 人工记价格"
+                else:
+                    hint = ("。用 scripts\\set-secret.cmd 录入登录凭据，"
+                            "或用 tools/price_set.py 人工记价格")
                 point.error = (f"页面要求**登录**才能看到价格（命中标记 {wall!r}）{hint}")
                 return point
             point.error = (f"正则在页面里没匹配到价格（读了 {response.bytes_read} 字节）。"
