@@ -1,0 +1,52 @@
+name: CI
+
+# 单元测试 + 入口冒烟 + 镜像构建，三件事一起证：
+#   1) 测试全绿（跨 3.11 / 3.12 / 3.13 三个版本 —— 零第三方依赖是本项目底线，
+#      所以这里唯一安装的 dev 依赖只有 pytest/ruff，运行时代码保持纯标准库）
+#   2) 镜像里跑 --list 能起来（证明 Dockerfile 不是摆设）
+#   3) ruff 只查"明确错误"（F=pyflakes、E9=语法），不搞风格洁癖刷红
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install dev deps (test-only; runtime stays stdlib-zero)
+        run: python -m pip install --upgrade pip pytest ruff
+
+      - name: Unit tests
+        run: python -m pytest tests -q --tb=short -p no:cacheprovider
+
+      - name: Entry point smoke (--list must work without config/network)
+        run: python -m ops --list
+
+      - name: Static check (F + E9 only)
+        run: ruff check ops tools tests evals --select F,E9 --output-format=github
+
+  docker:
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build image (no push)
+        run: docker build -t ops-pipeline:ci .
+
+      - name: Container smoke: --list and --doctor offline
+        run: |
+          docker run --rm ops-pipeline:ci --list
+          docker run --rm -v "$PWD/data:/app/data" ops-pipeline:ci --doctor --doctor-offline || true

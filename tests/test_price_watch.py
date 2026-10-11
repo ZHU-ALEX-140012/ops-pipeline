@@ -437,7 +437,7 @@ class TestCurrentRoundIsExcludedFromBaseline(unittest.TestCase):
 
     def test_excluding_current_run_makes_drop_detectable(self):
         """同一个 ts（最苛刻的情形）：排除本轮后必须能看出降幅。"""
-        same_second = "2026-10-06T17:09:47Z"
+        same_second = http.utc_now()  # 不要写死：stale 判据按“距现在多久”算，写死旧时间戳 = 时间炸弹
         self._record("r1", 100.0, same_second)
         self._record("r2", 80.0, same_second)   # 本轮
 

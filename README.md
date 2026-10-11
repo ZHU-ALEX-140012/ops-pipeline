@@ -1,5 +1,7 @@
 # ops-pipeline
 
+[![CI](https://github.com/ZHU-ALEX-140012/ops-pipeline/actions/workflows/ci.yml/badge.svg)](https://github.com/ZHU-ALEX-140012/ops-pipeline/actions/workflows/ci.yml)
+
 个人质量保障与运维流水线：**确定性脚本负责采集，AI 负责判断，脚本再决定要不要打扰你。**
 
 用 DeepSeek Harness 的 `headless` 模式做判断层，用 Windows 任务计划程序做触发，
