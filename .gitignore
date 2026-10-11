@@ -16,3 +16,6 @@ config/secrets.local.toml
 # 生成的、机器专属的启动器：由 scripts/register_tasks.ps1 现场生成
 # （里面有本机的绝对路径和 Python 解释器路径，不该跟着仓库走）
 scripts/run_once.cmd
+
+# local patches backup, never commit
+*.bak
