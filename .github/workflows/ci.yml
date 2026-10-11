@@ -46,7 +46,7 @@ jobs:
       - name: Build image (no push)
         run: docker build -t ops-pipeline:ci .
 
-      - name: Container smoke: --list and --doctor offline
+      - name: "Container smoke: --list and --doctor offline"
         run: |
           docker run --rm ops-pipeline:ci --list
           docker run --rm -v "$PWD/data:/app/data" ops-pipeline:ci --doctor --doctor-offline || true
