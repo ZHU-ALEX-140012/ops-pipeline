@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from . import aibridge, config as cfgmod, feedback, http, judge, notify, perspectives, report, routing, store
+from . import aibridge, feedback, http, judge, notify, perspectives, report, routing, store
 from ..investigate import tools as investigate
 
 PROMPT_DIR = Path(__file__).resolve().parents[1] / "prompts"

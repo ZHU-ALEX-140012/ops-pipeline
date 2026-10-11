@@ -19,12 +19,11 @@ from __future__ import annotations
 
 import imaplib
 import uuid
-from datetime import datetime, timezone
 from typing import Any
 
 from ..core import config as cfgmod
 from ..core import feedback as fb
-from ..core import http, pipeline, store
+from ..core import http, store
 
 TASK = "feedback_scan"
 

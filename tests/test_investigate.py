@@ -22,7 +22,6 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from ops.core import config as cfgmod  # noqa: E402
 from ops.core import store  # noqa: E402
 from ops.investigate import budget, mcp  # noqa: E402
 from ops.investigate import tools as toolmod  # noqa: E402

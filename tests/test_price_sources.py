@@ -28,7 +28,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tools"))
 
-from ops.core import http, prices, store  # noqa: E402
+from ops.core import http, prices  # noqa: E402
 from ops.tasks import price_watch  # noqa: E402
 
 TMP = ROOT / "data" / "_test_tmp" / "price_sources"

@@ -25,7 +25,6 @@ from pathlib import Path
 from typing import Any, Callable
 
 from . import config as cfgmod
-from . import store
 
 OK = "ok"
 WARN = "warn"

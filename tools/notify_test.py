@@ -116,12 +116,12 @@ def main() -> int:
     if result.status == "dry-run":
         print(
             "\n[!!] 没有真的发送（dry-run）：这个通道还没配好。\n"
-            f"  配置方式（按省事程度排序）：\n"
-            f"    scripts\\set-secret.cmd -Name OPS_PUSHPLUS_TOKEN -Masked\n"
-            f"        推荐：微信扫码登录 https://www.pushplus.plus/ 拿 token，消息直接推到微信，不用装 App\n"
-            f"    scripts\\set-webhook.cmd        企业微信群机器人（需要普通内部群）\n"
-            f"    scripts\\set-wecom-app.cmd     企业微信自建应用（需要已备案域名或公网服务器）\n"
-            f"    也可以在环境变量里设置对应的键"
+            "  配置方式（按省事程度排序）：\n"
+            "    scripts\\set-secret.cmd -Name OPS_PUSHPLUS_TOKEN -Masked\n"
+            "        推荐：微信扫码登录 https://www.pushplus.plus/ 拿 token，消息直接推到微信，不用装 App\n"
+            "    scripts\\set-webhook.cmd        企业微信群机器人（需要普通内部群）\n"
+            "    scripts\\set-wecom-app.cmd     企业微信自建应用（需要已备案域名或公网服务器）\n"
+            "    也可以在环境变量里设置对应的键"
         )
         return 1
     print("\n[!!] 发送失败。常见原因见上方详情（凭据抄错 / 可见范围不含自己 / 网络不通）。")

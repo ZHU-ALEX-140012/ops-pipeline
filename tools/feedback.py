@@ -25,7 +25,6 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from ops.core import config as cfgmod  # noqa: E402
-from ops.core import feedback as fb  # noqa: E402
 from ops.core import make_console_safe, store  # noqa: E402
 
 

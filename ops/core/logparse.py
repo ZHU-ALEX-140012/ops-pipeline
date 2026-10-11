@@ -221,7 +221,6 @@ class TemplateMiner:
 
     def add(self, parsed: ParsedLine, placeholder: str | None = None) -> str:
         tokens = parsed.tokens
-        holder = placeholder or self.placeholder
         if not tokens:
             parsed.template = ""
             return ""

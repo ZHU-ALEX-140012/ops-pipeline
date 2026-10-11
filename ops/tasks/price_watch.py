@@ -20,7 +20,7 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
-from ..core import config as cfgmod, http, judge, pipeline, prices, report, store
+from ..core import config as cfgmod, http, pipeline, prices, report, store
 
 TASK = "price_watch"
 

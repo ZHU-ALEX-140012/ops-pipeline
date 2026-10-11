@@ -107,7 +107,7 @@ def main(argv: list[str] | None = None) -> int:
           f"{'（**被截断**，价格可能在没读到的部分）' if response.truncated else ''}")
     print(f"  类型 {response.content_type or '（未给）'}")
     if not response.ok:
-        print(f"[FAIL] 非 2xx —— 这个地址拿不到页面内容，换一个源")
+        print("[FAIL] 非 2xx —— 这个地址拿不到页面内容，换一个源")
         return 1
 
     text = response.text
